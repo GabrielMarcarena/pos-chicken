@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { toBusinessDate } from './time.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -15,7 +16,10 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin')),
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- Set when an admin deletes an account that already appears in orders, payments or the audit trail. The row stays so
+  -- that history keeps its names; the account can no longer sign in and is hidden from the Users list.
+  deleted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -108,11 +112,16 @@ CREATE TABLE IF NOT EXISTS orders (
   submission_key TEXT NOT NULL UNIQUE,
   replaces_order_id INTEGER REFERENCES orders(id),
   replaced_by_order_id INTEGER REFERENCES orders(id),
+  -- Order List (Kanban): where the order is on its way to the customer. New orders start as ONGOING.
+  fulfillment_status TEXT NOT NULL DEFAULT 'ONGOING' CHECK (fulfillment_status IN ('ONGOING','STANDBY','COMPLETE')),
+  -- Order List: a flag staff set to find an order again. Not part of the sale, so it may change after submission.
+  bookmarked INTEGER NOT NULL DEFAULT 0 CHECK (bookmarked IN (0,1)),
   CHECK (total_centavos = subtotal_centavos - discount_centavos),
   CHECK ((discount_type = 'NONE') = (discount_centavos = 0))
 );
 CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(business_date);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_fulfillment ON orders(fulfillment_status);
 
 -- One row per chicken line. Preparation is saved on the line, not on the whole order.
 CREATE TABLE IF NOT EXISTS order_items (
@@ -174,11 +183,11 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
 
--- Audit trail: every submit, cancel, change and refund.
+-- Audit trail: every submit, cancel, change, refund and Order List move.
 CREATE TABLE IF NOT EXISTS order_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id INTEGER NOT NULL REFERENCES orders(id),
-  action_type TEXT NOT NULL CHECK (action_type IN ('SUBMIT','CANCEL','CHANGE','REFUND')),
+  action_type TEXT NOT NULL CHECK (action_type IN ('SUBMIT','CANCEL','CHANGE','REFUND','MOVE')),
   reason_code TEXT,
   reason_note TEXT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -220,22 +229,48 @@ WHEN NEW.status <> OLD.status
 BEGIN SELECT RAISE(ABORT, 'this order can no longer change status'); END;
 `;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
+
+/** One safety copy of the file per start, taken just before the first upgrade step runs. */
+function makeBackup(db, file) {
+  let done = false;
+  return (label) => {
+    if (done || file === ':memory:') return;
+    done = true;
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+    const copy = `${file}.before-${label}-${stamp}.bak`;
+    db.prepare('VACUUM INTO ?').run(path.resolve(copy));
+    console.log(`Upgrading the database. A safety copy was saved as ${copy}`);
+  };
+}
+
+function hasColumn(db, table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+}
+
+/** Run the steps of one upgrade in a single transaction and stamp the new version; on any error nothing changes. */
+function upgrade(db, version, steps) {
+  db.exec('BEGIN');
+  try {
+    steps();
+    db.exec(`PRAGMA user_version = ${version}`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
 
 /**
  * Version 2 -> 3 (Number of Heads): add the heads column to chicken lines (existing lines count as 1 head) and let a
- * service fee be charged "per head". Nothing is deleted or rewritten. A safety copy of the file is saved first.
+ * service fee be charged "per head". Nothing is deleted or rewritten.
  */
-function migrateTo3(db, file) {
-  if (file !== ':memory:') {
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
-    const copy = `${file}.before-v3-${stamp}.bak`;
-    db.prepare('VACUUM INTO ?').run(path.resolve(copy));
-    console.log(`Upgrading the database to version 3 (Number of Heads). A safety copy was saved as ${copy}`);
-  }
-  db.exec('BEGIN');
-  try {
-    db.exec('ALTER TABLE order_items ADD COLUMN heads INTEGER NOT NULL DEFAULT 1 CHECK (heads >= 1 AND heads <= 999)');
+function migrateTo3(db, backup) {
+  backup('v3');
+  upgrade(db, 3, () => {
+    if (!hasColumn(db, 'order_items', 'heads')) {
+      db.exec('ALTER TABLE order_items ADD COLUMN heads INTEGER NOT NULL DEFAULT 1 CHECK (heads >= 1 AND heads <= 999)');
+    }
     db.exec(`
       CREATE TABLE service_fees_new (
         code TEXT PRIMARY KEY CHECK (code IN ('POUR','NOT_POUR','DARA','DUKOT')),
@@ -246,12 +281,7 @@ function migrateTo3(db, file) {
       INSERT INTO service_fees_new (code, amount_centavos, basis, updated_at) SELECT code, amount_centavos, basis, updated_at FROM service_fees;
       DROP TABLE service_fees;
       ALTER TABLE service_fees_new RENAME TO service_fees;`);
-    db.exec('PRAGMA user_version = 3');
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
 }
 
 /**
@@ -259,15 +289,9 @@ function migrateTo3(db, file) {
  * (3 heads at ₱25 = ₱75). Amounts are not touched, saved orders are not touched, and each switch is written to the
  * price history. The admin can change a fee back in Products > Service fees.
  */
-function migrateTo4(db, file, alreadyBackedUp) {
-  if (!alreadyBackedUp && file !== ':memory:') {
-    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
-    const copy = `${file}.before-v4-${stamp}.bak`;
-    db.prepare('VACUUM INTO ?').run(path.resolve(copy));
-    console.log(`Upgrading the database to version 4 (service fees per head). A safety copy was saved as ${copy}`);
-  }
-  db.exec('BEGIN');
-  try {
+function migrateTo4(db, backup) {
+  backup('v4');
+  upgrade(db, 4, () => {
     const now = new Date().toISOString();
     const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
     for (const fee of db.prepare("SELECT code, amount_centavos FROM service_fees WHERE basis = 'per_item'").all()) {
@@ -277,12 +301,62 @@ function migrateTo4(db, file, alreadyBackedUp) {
                     VALUES ('SERVICE_FEE', ?, ?, ?, ?, 'per_item', 'per_head', ?, ?)`).run(fee.code, fee.code, fee.amount_centavos, fee.amount_centavos, admin.id, now);
       }
     }
-    db.exec('PRAGMA user_version = 4');
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  });
+}
+
+/**
+ * Version 4 -> 5 (Order List board): every order gets a pickup status (fulfillment_status). One new column on the
+ * existing orders table, no new table. Orders from before today are the shop's history, so they are marked COMPLETE
+ * (already claimed); today's orders start as ONGOING. The audit table is rebuilt only to allow the new MOVE action
+ * type, and every audit row is copied across unchanged (the rebuild never fires the "no delete" trigger because
+ * SQLite does not run triggers for the implicit delete inside DROP TABLE; the tests prove the rows are identical).
+ */
+function migrateTo5(db, backup) {
+  backup('v5');
+  upgrade(db, 5, () => {
+    if (!hasColumn(db, 'orders', 'fulfillment_status')) {
+      db.exec("ALTER TABLE orders ADD COLUMN fulfillment_status TEXT NOT NULL DEFAULT 'ONGOING' CHECK (fulfillment_status IN ('ONGOING','STANDBY','COMPLETE'))");
+      db.prepare("UPDATE orders SET fulfillment_status = 'COMPLETE' WHERE business_date < ?").run(toBusinessDate(new Date()));
+    }
+    const events = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'order_events'").get()?.sql ?? '';
+    if (!events.includes("'MOVE'")) {
+      db.exec(`
+        CREATE TABLE order_events_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          order_id INTEGER NOT NULL REFERENCES orders(id),
+          action_type TEXT NOT NULL CHECK (action_type IN ('SUBMIT','CANCEL','CHANGE','REFUND','MOVE')),
+          reason_code TEXT,
+          reason_note TEXT,
+          user_id INTEGER NOT NULL REFERENCES users(id),
+          created_at TEXT NOT NULL,
+          refund_centavos INTEGER,
+          stock_returnable INTEGER CHECK (stock_returnable IS NULL OR stock_returnable IN (0,1)),
+          related_order_id INTEGER REFERENCES orders(id),
+          snapshot_before TEXT,
+          snapshot_after TEXT
+        );
+        INSERT INTO order_events_new (id, order_id, action_type, reason_code, reason_note, user_id, created_at, refund_centavos, stock_returnable, related_order_id, snapshot_before, snapshot_after)
+          SELECT id, order_id, action_type, reason_code, reason_note, user_id, created_at, refund_centavos, stock_returnable, related_order_id, snapshot_before, snapshot_after FROM order_events;
+        DROP TABLE order_events;
+        ALTER TABLE order_events_new RENAME TO order_events;`);
+    }
+  });
+}
+
+/**
+ * Version 5 -> 6 (bookmarks and Delete Account): two small nullable/defaulted columns, nothing rewritten or removed.
+ *   orders.bookmarked  0 for every existing order (a flag staff can switch on from the Order List)
+ *   users.deleted_at   empty for every existing account (set only when an admin deletes an account that has history)
+ * Neither column is part of the protected order fields, so the "orders cannot be changed" safeguards are untouched.
+ */
+function migrateTo6(db, backup) {
+  backup('v6');
+  upgrade(db, 6, () => {
+    if (!hasColumn(db, 'users', 'deleted_at')) db.exec('ALTER TABLE users ADD COLUMN deleted_at TEXT');
+    if (!hasColumn(db, 'orders', 'bookmarked')) {
+      db.exec('ALTER TABLE orders ADD COLUMN bookmarked INTEGER NOT NULL DEFAULT 0 CHECK (bookmarked IN (0,1))');
+    }
+  });
 }
 
 export function openDb(file) {
@@ -297,8 +371,13 @@ export function openDb(file) {
     throw new Error(`The database file "${file}" was made by the first version of this app and cannot be opened by this one. `
       + 'If it only holds test orders, move it away and start again. If it holds real orders, ask for a migration first; do not delete it.');
   }
-  if (hasTables && version === 2) migrateTo3(db, file);
-  if (hasTables && version < 4) migrateTo4(db, file, version === 2); // a version 2 file was just backed up by the step above
+  if (hasTables && version < SCHEMA_VERSION) {
+    const backup = makeBackup(db, file);
+    if (version === 2) migrateTo3(db, backup);
+    if (version < 4) migrateTo4(db, backup);
+    if (version < 5) migrateTo5(db, backup);
+    migrateTo6(db, backup);
+  }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   const now = new Date().toISOString();

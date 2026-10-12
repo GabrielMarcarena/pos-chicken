@@ -66,6 +66,7 @@ export const ACTION_LABELS = {
   CANCEL: 'Canceled',
   CHANGE: 'Changed (replaced)',
   REFUND: 'Refunded',
+  MOVE: 'Moved on the Order List',
 };
 
 // How a service fee is charged: once per order line (flat), once per head (x the number of heads), or per kg.
@@ -78,4 +79,17 @@ export const SOLD_BY = { FIXED: 'Fixed price', PER_KG: 'Per kg' };
 
 // Optional discount added on the review screen.
 export const DISCOUNT_TYPES = ['NONE', 'FIXED', 'PERCENT'];
-export const DISCOUNT_REASONS = { SENIOR: 'Senior citizen', OTHER: 'Other (explain below)' };
+export const DISCOUNT_REASONS = {
+  SENIOR: 'Senior citizen',
+  BULK: 'Bulk Order Discount',
+  REJECT: 'Reject',
+  EMPLOYEE: 'Employee Discount',
+  VIP: 'VIP',
+  OTHER: 'Other (explain below)',
+};
+
+// Order List (Kanban board): where an order is on its way to the customer. This is separate from the sale status
+// above (Completed / Canceled / Refunded ...), which says whether the sale stands.
+export const FULFILLMENT = ['ONGOING', 'STANDBY', 'COMPLETE'];
+export const FULFILLMENT_LABELS = { ONGOING: 'Ongoing', STANDBY: 'Standby', COMPLETE: 'Complete' };
+export const FULFILLMENT_HINTS = { ONGOING: 'Being prepared', STANDBY: 'Ready for pickup', COMPLETE: 'Claimed by the customer' };

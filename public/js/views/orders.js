@@ -1,8 +1,8 @@
 // Order history: find an order by number, see exactly what was saved, and cancel, change or refund it.
 import { api, download } from '../api.js';
 import { state, saveDraft, newDraft, refreshConfig } from '../state.js';
-import { $, esc, label, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, statusBadge, uuid } from '../util.js';
-import { REASONS, ACTION_LABELS, PAYMENT_METHODS, STATUS_LABELS } from '/shared/constants.js';
+import { $, esc, label, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
+import { REASONS, ACTION_LABELS, PAYMENT_METHODS, STATUS_LABELS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE } from '/shared/constants.js';
 import { orderTable } from './slip.js';
 import { resetCheckoutUi } from './checkout.js';
 
@@ -10,8 +10,11 @@ const filters = { q: '', from: todayPH(), to: todayPH(), status: '' };
 const isManager = () => state.user.role === 'manager' || state.user.role === 'admin';
 
 export async function mountOrders(root) {
-  const statusOptions = ['', ...Object.keys(STATUS_LABELS)]
-    .map((s) => `<option value="${s}" ${filters.status === s ? 'selected' : ''}>${s ? esc(STATUS_LABELS[s]) : 'Any status'}</option>`).join('');
+  // The words on the Order List come first (Ongoing, Standby, Complete); the sale statuses stay available under their own heading.
+  const opt = (value, text) => `<option value="${value}" ${filters.status === value ? 'selected' : ''}>${esc(text)}</option>`;
+  const statusOptions = `<option value="">Any status</option>
+    <optgroup label="Order List">${FULFILLMENT.map((f) => opt(`pickup:${f}`, FULFILLMENT_LABELS[f])).join('')}</optgroup>
+    <optgroup label="Sale">${Object.keys(STATUS_LABELS).map((st) => opt(`sale:${st}`, STATUS_LABELS[st])).join('')}</optgroup>`;
   root.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h1>Orders</h1></div>
@@ -76,6 +79,7 @@ export async function mountOrders(root) {
     if (row) openDetail(Number(row.dataset.open));
   };
   await load();
+  startAutoRefresh();
 }
 
 function readFilters() {
@@ -85,30 +89,55 @@ function readFilters() {
   filters.status = $('#fstatus').value;
 }
 
-async function load() {
+let loadSeq = 0;
+let refreshTimer = null;
+
+async function load({ quiet = false } = {}) {
   const box = $('#results');
-  box.innerHTML = '<p class="muted"><span class="spinner" aria-hidden="true"></span> Loading orders...</p>';
+  if (!box) return; // the details were opened from the Order List, not from this screen
+  const seq = ++loadSeq;
+  if (!quiet) box.innerHTML = '<p class="muted"><span class="spinner" aria-hidden="true"></span> Loading orders...</p>';
   const qs = new URLSearchParams();
   if (filters.q) qs.set('q', filters.q);
   else { if (filters.from) qs.set('from', filters.from); if (filters.to) qs.set('to', filters.to); }
-  if (filters.status) qs.set('status', filters.status);
+  const [kind, code] = filters.status.split(':');
+  if (kind === 'pickup') qs.set('pickup', code);
+  else if (kind === 'sale') qs.set('status', code);
   try {
     const { orders } = await api('GET', `/api/orders?${qs}`);
+    if (seq !== loadSeq || !$('#results')) return; // a newer search started, or the person left this screen
     if (!orders.length) { box.innerHTML = '<div class="empty">No orders match. Change the dates or the search.</div>'; return; }
     box.innerHTML = `<p class="muted">${orders.length} ${orders.length === 1 ? 'order' : 'orders'}${orders.length >= 200 ? ' (showing the latest 200)' : ''}</p>
       <div class="table-wrap"><table class="data">
         <thead><tr><th>Order number</th><th>Date and time</th><th>Customer</th><th class="num">Items</th><th class="num">Total</th><th>Status</th><th>Cashier</th></tr></thead>
-        <tbody>${orders.map((o) => `<tr class="clickable row--${o.status.toLowerCase().replace('partially_refunded', 'refunded')}" data-open="${o.id}">
+        <tbody>${orders.map((o) => `<tr class="clickable row--${o.status.toLowerCase().replace('partially_refunded', 'refunded')}" data-open="${o.id}" data-order-id="${o.id}">
           <td><button type="button" class="btn btn--plain btn--small" data-open="${o.id}"><strong>${esc(o.order_number)}</strong></button></td>
           <td class="nowrap">${esc(fmtDateTime(o.submitted_at))}</td><td>${esc(o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number)}</td>
-          <td class="num">${o.line_count}</td><td class="num">${formatPeso(o.total_centavos)}</td><td>${statusBadge(o.status)}</td><td>${esc(o.cashier_name)}</td></tr>`).join('')}</tbody>
+          <td class="num">${o.line_count}</td><td class="num">${formatPeso(o.total_centavos)}</td><td data-order-status>${orderStatusBadges(o)}</td><td>${esc(o.cashier_name)}</td></tr>`).join('')}</tbody>
       </table></div>`;
-  } catch (err) { box.innerHTML = errorBox(err); }
+  } catch (err) {
+    if (seq !== loadSeq || !$('#results')) return;
+    if (!quiet) box.innerHTML = errorBox(err); // a failed background refresh keeps what is on screen
+  }
+}
+
+/**
+ * Statuses are moved on the Order List, possibly on another device. While this screen is open the list quietly asks for
+ * the saved statuses again, so what it shows is never older than a few seconds. It stops by itself when the person leaves.
+ */
+const REFRESH_MS = 20000;
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (!$('#results') || location.hash !== '#/orders') { clearInterval(refreshTimer); refreshTimer = null; return; }
+    if (document.hidden || document.querySelector('dialog[open]')) return;
+    load({ quiet: true });
+  }, REFRESH_MS);
 }
 
 function timeline(order) {
   return `<ol class="timeline">${order.events.map((e) => {
-    const cls = { CANCEL: 't-cancel', REFUND: 't-refund', CHANGE: 't-change' }[e.action_type] ?? '';
+    const cls = { CANCEL: 't-cancel', REFUND: 't-refund', CHANGE: 't-change', MOVE: 't-move' }[e.action_type] ?? '';
     const reason = e.reason_code ? `<div>Reason: ${esc(REASONS[e.reason_code] ?? e.reason_code)}${e.reason_note ? ` &mdash; ${esc(e.reason_note)}` : ''}</div>` : (e.reason_note ? `<div>${esc(e.reason_note)}</div>` : '');
     const extra = [
       e.related_number && e.action_type === 'CHANGE' ? `Replaced by ${esc(e.related_number)}` : '',
@@ -130,7 +159,7 @@ function paymentBlock(order) {
       ${p.reference ? `<dt>Reference</dt><dd>${esc(p.reference)}</dd>` : ''}</dl>`).join('');
 }
 
-async function openDetail(id) {
+export async function openDetail(id) {
   let order;
   try { ({ order } = await api('GET', `/api/orders/${id}`)); } catch (err) { toast(err.message, 'error'); return; }
   const open = order.status === 'COMPLETED';
@@ -143,11 +172,12 @@ async function openDetail(id) {
   const choice = await openDialog({
     title: order.order_number,
     body: `
-      <div class="btn-row">${statusBadge(order.status)} <span class="muted">${links}</span></div>
+      <div class="btn-row"><span data-order-status>${orderStatusBadges(order)}</span> <span class="muted">${links}</span></div>
       <dl class="kv">
         <dt>Date and time</dt><dd>${esc(fmtDateTime(order.submitted_at))}</dd>
         <dt>Customer</dt><dd>${esc(order.customer_number === 'WALK-IN' ? 'Walk-in' : order.customer_number)}</dd>
         <dt>Cashier</dt><dd>${esc(order.cashier_name)}</dd>
+        ${COUNTS_AS_SALE.includes(order.status) ? `<dt>Pickup status</dt><dd data-pickup-status>${esc(FULFILLMENT_LABELS[order.fulfillment_status] ?? '')}</dd>` : ''}
         ${order.refund_centavos ? `<dt>Refunded</dt><dd>${formatPeso(order.refund_centavos)}</dd>` : ''}
       </dl>
       <div class="slip">${orderTable(order)}</div>

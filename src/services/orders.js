@@ -12,7 +12,7 @@ import { HttpError } from '../http.js';
 import { parseWeightToGrams, parsePesosToCentavos, parseQuantityToMilli, parseWholeQuantityToMilli, parsePercentToBp, parseHeads } from '../../shared/money.js';
 import { validatePrep } from '../../shared/rules.js';
 import { chickenLine, otherLine, grandTotal, discountAmount } from '../../shared/pricing.js';
-import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS } from '../../shared/constants.js';
+import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE } from '../../shared/constants.js';
 import { getFeeConfig, productCode } from './catalog.js';
 import { ROLE_RANK } from './users.js';
 import { toBusinessDate, phtLocalToIso } from '../time.js';
@@ -53,6 +53,7 @@ export function presentOrder(o, viewer) {
     business_date: o.business_date,
     customer_number: o.customer_number,
     status: o.status,
+    fulfillment_status: o.fulfillment_status,
     subtotal_centavos: o.subtotal_centavos,
     discount: { type: o.discount_type, value: o.discount_value, amount_centavos: o.discount_centavos, reason_code: o.discount_reason, note: o.discount_note },
     total_centavos: o.total_centavos,
@@ -91,7 +92,7 @@ export function getOrder(db, id, viewer) {
   return presentOrder(o, viewer);
 }
 
-export function listOrders(db, { q = '', from, to, status, limit = 200 } = {}) {
+export function listOrders(db, { q = '', from, to, status, pickup, limit = 200 } = {}) {
   const where = [];
   const params = [];
   const text = clean(q, 60);
@@ -99,14 +100,95 @@ export function listOrders(db, { q = '', from, to, status, limit = 200 } = {}) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(from ?? '')) { where.push('o.business_date >= ?'); params.push(from); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(to ?? '')) { where.push('o.business_date <= ?'); params.push(to); }
   if (status) { where.push('o.status = ?'); params.push(status); }
+  if (pickup) {
+    // Same meaning as the Order List board: only orders that are on the list have an Ongoing / Standby / Complete status.
+    if (!FULFILLMENT.includes(pickup)) throw new HttpError(400, 'Choose Ongoing, Standby or Complete.', 'VALIDATION');
+    where.push(`o.fulfillment_status = ? AND o.status IN (${COUNTS_AS_SALE.map(() => '?').join(', ')})`);
+    params.push(pickup, ...COUNTS_AS_SALE);
+  }
   const rows = db.prepare(`
-    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.status, o.total_centavos, o.refund_centavos, o.submitted_at,
+    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.status, o.fulfillment_status, o.total_centavos, o.refund_centavos, o.submitted_at,
            u.display_name AS cashier_name, rb.order_number AS replaced_by_number,
            (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) + (SELECT COUNT(*) FROM order_other_items x WHERE x.order_id = o.id) AS line_count
     FROM orders o JOIN users u ON u.id = o.cashier_id LEFT JOIN orders rb ON rb.id = o.replaced_by_order_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY o.id DESC LIMIT ?`).all(...params, Math.min(Number(limit) || 200, 500));
   return rows;
+}
+
+/**
+ * The Order List (Kanban board). Ongoing and Standby show every open order, however old. Complete shows the orders the
+ * customers have claimed; `completeDays` limits how far back (default 7 days, "all" for everything) so the column stays quick.
+ * Canceled and replaced orders are not on the board: they were never going to be picked up. Refunded orders stay,
+ * marked, so nobody hands out a refunded order by mistake.
+ */
+export function listBoard(db, { completeDays = '7', now = new Date() } = {}) {
+  const all = String(completeDays) === 'all';
+  const days = Math.min(Math.max(Math.floor(Number(completeDays)) || 7, 1), 3650);
+  const since = toBusinessDate(new Date(now.getTime() - (days - 1) * 86400000));
+  const rows = db.prepare(`
+    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.status, o.fulfillment_status, o.bookmarked,
+           o.subtotal_centavos, o.discount_centavos, o.discount_reason, o.total_centavos, o.refund_centavos,
+           o.submitted_at, u.display_name AS cashier_name
+    FROM orders o JOIN users u ON u.id = o.cashier_id
+    WHERE o.status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')
+      AND (o.fulfillment_status <> 'COMPLETE' OR ? = 1 OR o.business_date >= ?)
+    ORDER BY o.id DESC LIMIT 1000`).all(all ? 1 : 0, since);
+  const chicken = db.prepare('SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? ORDER BY line_no');
+  const other = db.prepare('SELECT product_name, unit, sold_by, quantity_milli FROM order_other_items WHERE order_id = ? ORDER BY line_no');
+  // What the expanded card shows about payment. Account names and numbers are left out; the Details screen has them (masked for cashiers).
+  const paid = db.prepare('SELECT method, amount_centavos, paid_at, reference FROM payments WHERE order_id = ? ORDER BY id');
+  const cards = rows.map((o) => ({
+    ...o,
+    bookmarked: !!o.bookmarked,
+    payments: paid.all(o.id),
+    items: chicken.all(o.id).map((i) => ({ kind: 'chicken', name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size })),
+    other_items: other.all(o.id).map((i) => ({ kind: 'other', name: i.product_name, unit: i.unit, sold_by: i.sold_by, quantity_milli: i.quantity_milli })),
+  }));
+  return { columns: FULFILLMENT, complete_days: all ? 'all' : days, orders: cards };
+}
+
+/**
+ * Move an order to Ongoing, Standby or Complete. Only the pickup status changes: the sale, its lines, prices and payment
+ * are untouched. Every real move is written to the audit trail ("Ongoing → Standby", who, when). Moving to the column the
+ * order is already in does nothing, so a double drop never writes twice or duplicates a card.
+ */
+export function moveOrder(db, user, id, status, { now = new Date() } = {}) {
+  if (!FULFILLMENT.includes(status)) throw new HttpError(400, 'Choose Ongoing, Standby or Complete.', 'VALIDATION');
+  return tx(db, () => {
+    const order = db.prepare('SELECT id, order_number, status, fulfillment_status FROM orders WHERE id = ?').get(id);
+    if (!order) throw new HttpError(404, 'Order not found.', 'NOT_FOUND');
+    if (order.status === 'CANCELED' || order.status === 'REPLACED') {
+      throw new HttpError(409, `${order.order_number} is ${order.status.toLowerCase()} and is not on the Order List.`, 'BAD_STATUS');
+    }
+    const changed = order.fulfillment_status !== status;
+    if (changed) {
+      db.prepare('UPDATE orders SET fulfillment_status = ? WHERE id = ?').run(status, id);
+      addEvent(db, {
+        orderId: id, action: 'MOVE', reasonNote: `${FULFILLMENT_LABELS[order.fulfillment_status]} → ${FULFILLMENT_LABELS[status]}`, userId: user.id, now,
+      });
+    }
+    return { order: getOrder(db, id, user), changed };
+  });
+}
+
+/**
+ * Bookmark (or un-bookmark) an order on the Order List. The caller says which state it wants, so a repeated or double request
+ * ends in the same place instead of flipping back. Only the orders.bookmarked flag changes: the status, the pickup status, the
+ * lines and the payment are untouched, and the flag belongs to the order id, so it stays with the card when the card moves.
+ */
+export function setBookmark(db, id, bookmarked) {
+  if (typeof bookmarked !== 'boolean') throw new HttpError(400, 'Say whether the order should be bookmarked (true or false).', 'VALIDATION');
+  return tx(db, () => {
+    const order = db.prepare('SELECT id, order_number, status, bookmarked FROM orders WHERE id = ?').get(id);
+    if (!order) throw new HttpError(404, 'Order not found.', 'NOT_FOUND');
+    if (order.status === 'CANCELED' || order.status === 'REPLACED') {
+      throw new HttpError(409, `${order.order_number} is ${order.status.toLowerCase()} and is not on the Order List.`, 'BAD_STATUS');
+    }
+    const changed = !!order.bookmarked !== bookmarked;
+    if (changed) db.prepare('UPDATE orders SET bookmarked = ? WHERE id = ?').run(bookmarked ? 1 : 0, id);
+    return { id, order_number: order.order_number, bookmarked, changed };
+  });
 }
 
 // ---- Validating and pricing a new order ---------------------------------------------------------

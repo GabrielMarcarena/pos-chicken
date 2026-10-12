@@ -1,14 +1,14 @@
 // The API. Each route names the lowest role allowed to call it; the server enforces that, not the browser.
 import { HttpError } from './http.js';
-import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS } from '../shared/constants.js';
+import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS, FULFILLMENT_LABELS } from '../shared/constants.js';
 import {
-  authenticate, createSession, destroySession, loginLimiter, createUser, listUsers, updateUser,
+  authenticate, createSession, destroySession, loginLimiter, createUser, listUsers, updateUser, deleteUser,
 } from './services/users.js';
 import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
   createOption, updateOption, getFeeConfig, updateFee, listPriceHistory,
 } from './services/catalog.js';
-import { createOrder, getOrder, listOrders, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
+import { createOrder, getOrder, listOrders, listBoard, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv } from './services/export.js';
 import { gatherDaily, buildDailyXlsx, buildDailyCsv } from './services/dailyReport.js';
 import { toBusinessDate } from './time.js';
@@ -56,6 +56,7 @@ export function registerRoutes(r) {
     reasons: REASONS,
     payment_methods: PAYMENT_METHODS,
     discount_reasons: DISCOUNT_REASONS,
+    fulfillment_labels: FULFILLMENT_LABELS,
     products: listProducts(ctx.db),
     other_products: listOtherProducts(ctx.db),
     large_weight_kg: ctx.config.largeWeightKg,
@@ -76,9 +77,11 @@ export function registerRoutes(r) {
   r.add('GET', '/api/price-history', 'admin', (ctx) => ({ history: listPriceHistory(ctx.db) }));
 
   // ---- Users (admin) ----
-  r.add('GET', '/api/users', 'admin', (ctx) => ({ users: listUsers(ctx.db) }));
+  r.add('GET', '/api/users', 'admin', (ctx) => ({ users: listUsers(ctx.db, ctx.user) }));
   r.add('POST', '/api/users', 'admin', (ctx) => created({ user: createUser(ctx.db, ctx.body, ctx.now()) }));
   r.add('PATCH', '/api/users/:id', 'admin', (ctx) => ({ user: updateUser(ctx.db, ctx.user, idParam(ctx), ctx.body) }));
+  // Delete Account. Admin only, checked here on the server; hiding the button is not the protection.
+  r.add('DELETE', '/api/users/:id', 'admin', (ctx) => ({ ok: true, ...deleteUser(ctx.db, ctx.user, idParam(ctx), ctx.now()) }));
 
   // ---- Orders ----
   r.add('POST', '/api/orders', 'cashier', (ctx) => {
@@ -86,6 +89,10 @@ export function registerRoutes(r) {
     return result.duplicate ? result : created(result);
   });
   r.add('GET', '/api/orders', 'cashier', (ctx) => ({ orders: listOrders(ctx.db, ctx.query) }));
+  // Order List (Kanban board): the latest saved pickup status of every open order, and moving a card.
+  r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db, { completeDays: ctx.query.complete_days, now: ctx.now() }));
+  r.add('POST', '/api/orders/:id/fulfillment', 'cashier', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
+  r.add('PUT', '/api/orders/:id/bookmark', 'cashier', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
   r.add('GET', '/api/orders/:id', 'cashier', (ctx) => ({ order: getOrder(ctx.db, idParam(ctx), ctx.user) }));
   r.add('POST', '/api/orders/:id/cancel', 'cashier', (ctx) => ({ order: cancelOrder(ctx.db, ctx.user, idParam(ctx), ctx.body, { now: ctx.now() }) }));
   r.add('POST', '/api/orders/:id/change', 'cashier', (ctx) => {

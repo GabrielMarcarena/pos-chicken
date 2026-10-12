@@ -1,5 +1,5 @@
 // Small helpers shared by every screen.
-import { LABELS } from '/shared/constants.js';
+import { LABELS, COUNTS_AS_SALE, FULFILLMENT, FULFILLMENT_LABELS } from '/shared/constants.js';
 export { formatPeso, formatKg, formatThousandths } from '/shared/money.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
@@ -86,6 +86,19 @@ export async function confirmDialog(message, { confirmLabel = 'Yes, continue', c
 export function statusBadge(status) {
   const text = { COMPLETED: 'Completed', CANCELED: 'Canceled', REFUNDED: 'Refunded', PARTIALLY_REFUNDED: 'Partially refunded', REPLACED: 'Replaced' }[status] ?? status;
   return `<span class="badge badge--${status.toLowerCase()}">${esc(text)}</span>`;
+}
+
+/**
+ * The status an order shows on the Orders screen. It is the same saved value the Order List board uses (orders.fulfillment_status),
+ * so the two screens can never disagree. An order that is on the Order List shows its column: Ongoing, Standby or Complete.
+ * A refunded order is still on the list, so it also carries its Refunded badge. A canceled or replaced order is not on the
+ * Order List (it was never going to be picked up), so it shows Canceled or Replaced instead.
+ */
+export function orderStatusBadges(o) {
+  const onList = COUNTS_AS_SALE.includes(o.status) && FULFILLMENT.includes(o.fulfillment_status);
+  if (!onList) return statusBadge(o.status);
+  const stage = `<span class="badge badge--${o.fulfillment_status.toLowerCase()}" data-stage="${o.fulfillment_status}">${esc(FULFILLMENT_LABELS[o.fulfillment_status])}</span>`;
+  return o.status === 'COMPLETED' ? stage : `${stage} ${statusBadge(o.status)}`;
 }
 
 /** Plain text list of the preparation chosen on a chicken line: service, Dara, then the slice size or Dukot. */

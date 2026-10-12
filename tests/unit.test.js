@@ -7,6 +7,7 @@ import { chickenLine, otherLine, grandTotal, discountAmount } from '../shared/pr
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from '../src/db.js';
 import { blockFor, eggSize } from '../src/services/dailyReport.js';
@@ -308,7 +309,7 @@ test('upgrade 2 -> 3: a version 2 database with orders keeps every order, gets h
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);     // 2 -> 3 -> 4 in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);     // 2 -> 3 -> 4 -> 5 -> 6 in one start
   const line = db.prepare('SELECT * FROM order_items').get();
   assert.deepEqual([line.weight_g, line.line_total_centavos, line.feather_prep, line.slice_size, line.heads], [3600, 25380, 'POUR', 'MEDIUM', 1]);
   assert.equal(db.prepare('SELECT order_number, total_centavos FROM orders').get().total_centavos, 25380);
@@ -344,7 +345,7 @@ test('upgrade 3 -> 4: flat service fees become per head, amounts and saved order
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
   const fees = Object.fromEntries(db.prepare('SELECT code, amount_centavos, basis FROM service_fees').all().map((f) => [f.code, [f.amount_centavos, f.basis]]));
   assert.deepEqual([fees.POUR, fees.NOT_POUR, fees.DARA, fees.DUKOT], [[4500, 'per_head'], [2500, 'per_head'], [0, 'per_head'], [500, 'per_kg']]);
   assert.equal(db.prepare('SELECT total_centavos FROM orders').get().total_centavos, 29880);                  // a saved order is never recalculated
@@ -389,4 +390,247 @@ test('daily report: egg products land in the form\'s egg sizes; other products a
   assert.equal(eggSize('Eggs'), 'Asst.');
   assert.equal(eggSize('Garlic'), null);
   assert.equal(eggSize('Etag (Smoked)'), null);
+});
+
+// ---- Revision 5 upgrade: version 4 -> 5 (Order List board) -----------------------------------------------------------
+
+const here = path.dirname(fileURLToPath(import.meta.url));   // not new URL(...).pathname: that turns a space in the folder name into %20
+const dateOf = (offsetDays) => new Date(Date.now() - offsetDays * 86400000 + 8 * 3600000).toISOString().slice(0, 10);
+
+/** A database exactly as revision 4 leaves it (its real schema, saved in tests/fixtures), with orders and audit rows in it. */
+function makeVersion4Database() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-v4-'));
+  const file = path.join(dir, 'pos.db');
+  const seed = new DatabaseSync(file);
+  seed.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  seed.exec(fs.readFileSync(path.join(here, 'fixtures', 'schema-v4.sql'), 'utf8'));
+  const stamp = '2026-10-09T02:00:00.000Z';
+  seed.prepare("INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES ('u','U','x','admin',?)").run(stamp);
+  seed.prepare("INSERT INTO products (name, price_per_kg_centavos, active, created_at, updated_at) VALUES ('Cull Chicken', 5800, 1, ?, ?)").run(stamp, stamp);
+  for (const [code, amount] of [['POUR', 4500], ['NOT_POUR', 2500], ['DARA', 0], ['DUKOT', 0]]) {
+    seed.prepare("INSERT INTO service_fees (code, amount_centavos, basis, updated_at) VALUES (?,?,'per_head',?)").run(code, amount, stamp);
+  }
+  const order = (n, date, status = 'COMPLETED', refund = 0) => {
+    seed.prepare(`INSERT INTO orders (order_number, business_date, status, subtotal_centavos, total_centavos, refund_centavos, cashier_id, submitted_at, submission_key)
+                  VALUES (?,?,?,5800,5800,?,1,?,?)`).run(`ORD-${n}`, date, status, refund, stamp, `key-${n}-xxxxxxxx`);
+    seed.prepare(`INSERT INTO order_items (order_id, line_no, product_id, product_name, price_per_kg_centavos, weight_g, heads, weight_amount_centavos, feather_prep, dara, cut_method, slice_size, fee_detail, service_fee_centavos, line_total_centavos)
+                  VALUES (?,1,1,'Cull Chicken',5800,1000,1,5800,'LIVE',0,'NONE',NULL,'[]',0,5800)`).run(n);
+    seed.prepare("INSERT INTO payments (order_id, method, amount_centavos, recorded_by, recorded_at) VALUES (?,'CASH',5800,1,?)").run(n, stamp);
+    seed.prepare("INSERT INTO order_events (order_id, action_type, reason_note, user_id, created_at, snapshot_after) VALUES (?,'SUBMIT','first',1,?,'{\"a\":1}')").run(n, stamp);
+  };
+  order(1, '2026-10-01');                  // an old order
+  order(2, dateOf(3));                     // three days ago
+  order(3, dateOf(0));                     // today
+  order(4, dateOf(0), 'CANCELED');
+  seed.prepare("INSERT INTO order_events (order_id, action_type, reason_code, user_id, created_at) VALUES (4,'CANCEL','WRONG_WEIGHT',1,?)").run(stamp);
+  seed.exec('PRAGMA user_version = 4');
+  return { dir, file, seed };
+}
+
+test('upgrade 4 -> 5: old orders become Complete, today\'s become Ongoing, nothing else changes, and a safety copy is saved', () => {
+  const { dir, file, seed } = makeVersion4Database();
+  const tables = ['users', 'products', 'service_fees', 'order_items', 'order_other_items', 'payments', 'order_events', 'price_history', 'order_counters'];
+  // users gained a deleted_at column in version 6; it is empty for everyone, so it is left out of the byte-for-byte comparison
+  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ deleted_at: _d, ...row }) => row)])));
+  const before = dump(seed, tables);
+  const ordersBefore = seed.prepare('SELECT * FROM orders ORDER BY id').all();
+  seed.close();
+
+  const db = openDb(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(dump(db, tables), before, 'every line, payment, fee and audit row is byte-for-byte the same');
+  const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
+  assert.deepEqual(ordersAfter.map((o) => o.fulfillment_status), ['COMPLETE', 'COMPLETE', 'ONGOING', 'ONGOING']);
+  ordersAfter.forEach((o, i) => { const { fulfillment_status: _f, bookmarked: _b, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });   // every old column unchanged
+  assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+  assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
+  assert.ok(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'order_events'").get().sql.includes("'MOVE'"));
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_orders_fulfillment'").get());
+
+  // the safety copy is the untouched version 4 file
+  const copies = fs.readdirSync(dir).filter((f) => /\.before-v5-.*\.bak$/.test(f));
+  assert.equal(copies.length, 1);
+  const copy = new DatabaseSync(path.join(dir, copies[0]), { readOnly: true });
+  assert.equal(copy.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 4);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM order_events').get().n, 5);
+  copy.close();
+
+  // the rebuilt audit table is still append-only, and now accepts MOVE; new ids carry on after the old ones
+  assert.throws(() => db.prepare("UPDATE order_events SET reason_note = 'x'").run(), /audit records cannot be changed/);
+  assert.throws(() => db.prepare('DELETE FROM order_events').run(), /audit records cannot be deleted/);
+  assert.throws(() => db.prepare("INSERT INTO order_events (order_id, action_type, user_id, created_at) VALUES (1,'BOGUS',1,'x')").run(), /CHECK|constraint/i);
+  db.prepare("INSERT INTO order_events (order_id, action_type, reason_note, user_id, created_at) VALUES (3,'MOVE','Ongoing → Standby',1,'2026-10-12T00:00:00.000Z')").run();
+  assert.equal(db.prepare('SELECT MAX(id) AS id FROM order_events').get().id, 6);
+  // submitted orders are still protected, and only the pickup status can change
+  assert.throws(() => db.prepare('DELETE FROM orders WHERE id = 1').run(), /cannot be deleted/);
+  assert.throws(() => db.prepare('UPDATE orders SET total_centavos = 1, subtotal_centavos = 1 WHERE id = 1').run(), /cannot be changed after submission/);
+  db.prepare("UPDATE orders SET fulfillment_status = 'STANDBY' WHERE id = 3").run();
+  assert.equal(db.prepare('SELECT fulfillment_status FROM orders WHERE id = 3').get().fulfillment_status, 'STANDBY');
+  assert.throws(() => db.prepare("UPDATE orders SET fulfillment_status = 'DONE' WHERE id = 3").run(), /CHECK|constraint/i);
+  db.close();
+
+  // a second start changes nothing and makes no second copy
+  const again = openDb(file);
+  assert.equal(again.prepare("SELECT fulfillment_status FROM orders WHERE id = 3").get().fulfillment_status, 'STANDBY');
+  assert.equal(again.prepare('SELECT COUNT(*) AS n FROM order_events').get().n, 6);
+  again.close();
+  assert.equal(fs.readdirSync(dir).filter((f) => f.includes('.bak')).length, 1);
+});
+
+test('upgrade 4 -> 5: if a step fails, nothing is changed and the file stays a working version 4', () => {
+  const { file, seed } = makeVersion4Database();
+  seed.exec('DROP TABLE order_events');                          // damage: the audit table is missing, so the copy step cannot work
+  seed.close();
+  assert.throws(() => openDb(file), /order_events/);
+  const check = new DatabaseSync(file, { readOnly: true });
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(check.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('orders') WHERE name = 'fulfillment_status'").get().n, 0);
+  assert.equal(check.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 4);
+  check.close();
+});
+
+test('a new database starts at version 6, orders default to Ongoing and not bookmarked, and accounts are not deleted', () => {
+  const db = openDb(':memory:');
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  db.prepare("INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES ('u','U','x','admin','t')").run();
+  db.prepare("INSERT INTO orders (order_number, business_date, status, subtotal_centavos, total_centavos, cashier_id, submitted_at, submission_key) VALUES ('A','2026-10-09','COMPLETED',100,100,1,'t','k-aaaaaaaa')").run();
+  assert.equal(db.prepare('SELECT fulfillment_status FROM orders').get().fulfillment_status, 'ONGOING');
+  db.close();
+});
+
+// ---- Revision 7: the upgrade from version 5 (bookmarks and Delete Account) ----------------------------------------------
+
+function makeVersion5Database() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-v5-'));
+  const file = path.join(dir, 'pos.db');
+  const seed = new DatabaseSync(file);
+  seed.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  seed.exec(fs.readFileSync(path.join(here, 'fixtures', 'schema-v5.sql'), 'utf8'));
+  const stamp = '2026-10-09T02:00:00.000Z';
+  seed.prepare("INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES ('owner','Owner','x','admin',?), ('cash','Cashier','y','cashier',?)").run(stamp, stamp);
+  seed.prepare("INSERT INTO products (name, price_per_kg_centavos, active, created_at, updated_at) VALUES ('Cull Chicken', 5800, 1, ?, ?)").run(stamp, stamp);
+  for (const [code, amount] of [['POUR', 4500], ['NOT_POUR', 2500], ['DARA', 0], ['DUKOT', 0]]) {
+    seed.prepare("INSERT INTO service_fees (code, amount_centavos, basis, updated_at) VALUES (?,?,'per_head',?)").run(code, amount, stamp);
+  }
+  const fulfillment = ['COMPLETE', 'STANDBY', 'ONGOING', 'ONGOING'];
+  for (let n = 1; n <= 4; n += 1) {
+    seed.prepare(`INSERT INTO orders (order_number, business_date, status, subtotal_centavos, total_centavos, refund_centavos, cashier_id, submitted_at, submission_key, fulfillment_status)
+                  VALUES (?,?,?,5800,5800,0,2,?,?,?)`).run(`ORD-${n}`, '2026-10-09', n === 4 ? 'CANCELED' : 'COMPLETED', stamp, `key-${n}-xxxxxxxx`, fulfillment[n - 1]);
+    seed.prepare(`INSERT INTO order_items (order_id, line_no, product_id, product_name, price_per_kg_centavos, weight_g, heads, weight_amount_centavos, feather_prep, dara, cut_method, slice_size, fee_detail, service_fee_centavos, line_total_centavos)
+                  VALUES (?,1,1,'Cull Chicken',5800,1000,1,5800,'LIVE',0,'NONE',NULL,'[]',0,5800)`).run(n);
+    seed.prepare("INSERT INTO payments (order_id, method, amount_centavos, recorded_by, recorded_at) VALUES (?,'CASH',5800,2,?)").run(n, stamp);
+    seed.prepare("INSERT INTO order_events (order_id, action_type, reason_note, user_id, created_at, snapshot_after) VALUES (?,'SUBMIT','first',2,?,'{\"a\":1}')").run(n, stamp);
+  }
+  seed.prepare("INSERT INTO order_events (order_id, action_type, reason_note, user_id, created_at) VALUES (2,'MOVE','Ongoing → Standby',2,?)").run(stamp);
+  seed.prepare("INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at) VALUES ('abc', 2, ?, ?)").run(stamp, stamp);
+  seed.exec('PRAGMA user_version = 5');
+  return { dir, file, seed };
+}
+
+test('upgrade 5 -> 6: every order starts un-bookmarked, every account starts un-deleted, all other data is identical, and a safety copy is saved', () => {
+  const { dir, file, seed } = makeVersion5Database();
+  const tables = ['products', 'service_fees', 'order_items', 'order_other_items', 'payments', 'order_events', 'price_history', 'order_counters', 'sessions'];
+  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()])));
+  const before = dump(seed, tables);
+  const usersBefore = seed.prepare('SELECT * FROM users ORDER BY id').all();
+  const ordersBefore = seed.prepare('SELECT * FROM orders ORDER BY id').all();
+  seed.close();
+
+  const db = openDb(file);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(dump(db, tables), before, 'every line, payment, fee, session and audit row is byte-for-byte the same');
+  const usersAfter = db.prepare('SELECT * FROM users ORDER BY id').all();
+  assert.ok(usersAfter.every((u) => u.deleted_at === null));
+  usersAfter.forEach((u, i) => { const { deleted_at: _d, ...rest } = u; assert.equal(JSON.stringify(rest), JSON.stringify(usersBefore[i])); });
+  const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
+  assert.ok(ordersAfter.every((o) => o.bookmarked === 0));
+  ordersAfter.forEach((o, i) => { const { bookmarked: _b, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });
+  assert.deepEqual(ordersAfter.map((o) => o.fulfillment_status), ['COMPLETE', 'STANDBY', 'ONGOING', 'ONGOING'], 'pickup statuses untouched');
+  assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+  assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
+
+  // the safety copy is the untouched version 5 file
+  const copies = fs.readdirSync(dir).filter((f) => /\.before-v6-.*\.bak$/.test(f));
+  assert.equal(copies.length, 1);
+  const copy = new DatabaseSync(path.join(dir, copies[0]), { readOnly: true });
+  assert.equal(copy.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(copy.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('orders') WHERE name = 'bookmarked'").get().n, 0);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 4);
+  assert.equal(copy.prepare('SELECT COUNT(*) AS n FROM order_events').get().n, 5);
+  copy.close();
+
+  // the new columns work, the old protections still hold
+  db.prepare('UPDATE orders SET bookmarked = 1 WHERE id = 2').run();
+  assert.equal(db.prepare('SELECT bookmarked FROM orders WHERE id = 2').get().bookmarked, 1);
+  assert.throws(() => db.prepare('UPDATE orders SET bookmarked = 5 WHERE id = 2').run(), /CHECK|constraint/i);
+  assert.throws(() => db.prepare('UPDATE orders SET total_centavos = 1, subtotal_centavos = 1 WHERE id = 1').run(), /cannot be changed after submission/);
+  assert.throws(() => db.prepare('DELETE FROM orders WHERE id = 1').run(), /cannot be deleted/);
+  assert.throws(() => db.prepare('DELETE FROM payments').run(), /cannot be deleted/);
+  assert.throws(() => db.prepare("UPDATE order_events SET reason_note = 'x'").run(), /audit records cannot be changed/);
+  assert.throws(() => db.prepare('DELETE FROM users WHERE id = 2').run(), /FOREIGN KEY/i);        // an account with history cannot be erased at the database level either
+  db.close();
+
+  // a second start changes nothing and makes no second copy
+  const again = openDb(file);
+  assert.equal(again.prepare('SELECT bookmarked FROM orders WHERE id = 2').get().bookmarked, 1);
+  again.close();
+  assert.equal(fs.readdirSync(dir).filter((f) => f.includes('.bak')).length, 1);
+});
+
+test('upgrade 5 -> 6: if a step fails, nothing is changed and the file stays a working version 5', () => {
+  const { file, seed } = makeVersion5Database();
+  seed.exec('PRAGMA foreign_keys = OFF');
+  seed.exec('DROP TRIGGER orders_no_delete; DROP TRIGGER orders_immutable_fields; DROP TRIGGER orders_status_guard');
+  seed.exec('DROP TABLE order_events; DROP TABLE payments; DROP TABLE order_items; DROP TABLE orders');   // damage: the orders table is missing, so its step cannot work
+  seed.close();
+  assert.throws(() => openDb(file), /orders/);
+  const check = new DatabaseSync(file, { readOnly: true });
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(check.prepare("SELECT COUNT(*) AS n FROM pragma_table_info('users') WHERE name = 'deleted_at'").get().n, 0, 'the users change was rolled back too');
+  assert.equal(check.prepare('SELECT COUNT(*) AS n FROM users').get().n, 2);
+  check.close();
+});
+
+// ---- Revision 7: Order List sorting (the same code the browser runs) ---------------------------------------------------------
+
+test('Order List sorting: every option, on stored dates, names and numbers', async () => {
+  const { sortOrders, SORTS, timeOf, customerName } = await import('../shared/boardSort.js');
+  const o = (id, order_number, customer_number, submitted_at) => ({ id, order_number, customer_number, submitted_at });
+  const list = [
+    o(1, 'ORD-20260301-001', 'Zed', '2026-03-01T01:00:00.000Z'),
+    o(2, 'ORD-20260301-002', 'abby', '2026-03-01T02:00:00.000Z'),
+    o(3, 'ORD-20260228-007', 'Carlo', '2026-02-28T05:00:00.000Z'),
+    o(4, 'ORD-20260302-001', 'WALK-IN', '2026-03-02T01:00:00.000Z'),
+    o(5, 'ORD-20260227-003', 'Bea', 'not-a-date'),
+    o(6, 'ORD-20260227-004', 'bea', null),
+    o(7, 'ORD-20260301-010', ' Anna ', '2026-03-01T01:00:00.000Z'),
+  ];
+  const ids = (mode) => sortOrders(list, mode).map((x) => x.id);
+  assert.deepEqual(SORTS.map(([key]) => key), ['newest', 'oldest', 'name_az', 'name_za', 'number']);
+  assert.deepEqual(SORTS.map(([, text]) => text), ['Newest first', 'Oldest first', 'Customer A–Z', 'Customer Z–A', 'Order number']);
+  // newest first; the same minute falls back to the higher id; orders with no usable date come last
+  assert.deepEqual(ids('newest'), [4, 2, 7, 1, 3, 6, 5]);
+  // oldest first; the same minute falls back to the lower id; no usable date still last
+  assert.deepEqual(ids('oldest'), [3, 1, 7, 2, 4, 5, 6]);
+  // A-Z ignores case and spaces around the name; the same name shows the newest order first; walk-ins (no name) come last
+  // ("Bea" and "bea" are the same name: ties show the higher id, the newer order, first)
+  assert.deepEqual(sortOrders(list, 'name_az').map((x) => customerName(x)), ['abby', 'Anna', 'bea', 'Bea', 'Carlo', 'Zed', '']);
+  assert.deepEqual(sortOrders(list, 'name_za').map((x) => customerName(x)), ['Zed', 'Carlo', 'bea', 'Bea', 'Anna', 'abby', '']);
+  assert.equal(ids('name_az').at(-1), 4);
+  assert.equal(ids('name_za').at(-1), 4, 'walk-ins stay last in Z-A too');
+  // order number: plain ascending, equal numbers fall back to the id
+  assert.deepEqual(sortOrders(list, 'number').map((x) => x.order_number), ['ORD-20260227-003', 'ORD-20260227-004', 'ORD-20260228-007', 'ORD-20260301-001', 'ORD-20260301-002', 'ORD-20260301-010', 'ORD-20260302-001']);
+  // sorting never changes the list it was given, and an unknown choice falls back to newest first
+  const copy = JSON.stringify(list);
+  for (const [mode] of SORTS) sortOrders(list, mode);
+  assert.equal(JSON.stringify(list), copy);
+  assert.deepEqual(ids('nonsense'), ids('newest'));
+  assert.deepEqual(sortOrders([], 'name_az'), []);
+  // dates: real ones parse, everything else is "no date"
+  assert.equal(timeOf('2026-03-01T01:00:00.000Z'), Date.parse('2026-03-01T01:00:00.000Z'));
+  for (const bad of [null, undefined, '', 'not-a-date', 'NaN']) assert.equal(timeOf(bad), null);
+  // a missing name or number cannot break the list
+  const odd = [{ id: 1 }, { id: 2, customer_number: null, order_number: null, submitted_at: undefined }];
+  for (const [mode] of SORTS) assert.equal(sortOrders(odd, mode).length, 2);
 });

@@ -32,7 +32,7 @@ export function gatherExport(db, { from, to }) {
   const orderRows = [];
   const audit = [];
   for (const o of orders) {
-    const lastAction = [...o.events].reverse().find((e) => e.action_type !== 'SUBMIT');
+    const lastAction = [...o.events].reverse().find((e) => e.action_type !== 'SUBMIT' && e.action_type !== 'MOVE'); // pickup moves are not sale actions
     const reason = lastAction ? `${REASONS[lastAction.reason_code] ?? lastAction.reason_code ?? ''}${lastAction.reason_note ? ': ' + lastAction.reason_note : ''}` : '';
     const when = toPhtDateTime(o.submitted_at);
     const discountReason = o.discount_centavos > 0

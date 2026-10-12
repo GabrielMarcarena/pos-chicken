@@ -41,18 +41,24 @@ export function createUser(db, { username, display_name, role, password }, now =
       .run(name, display.slice(0, 60), hashPassword(password), role, now.toISOString());
     return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid));
   } catch (err) {
-    if (String(err.message).includes('UNIQUE')) throw new HttpError(409, 'That username is already taken.', 'DUPLICATE');
+    if (String(err.message).includes('UNIQUE')) {
+      const old = db.prepare('SELECT deleted_at FROM users WHERE username = ?').get(name);
+      throw new HttpError(409, old?.deleted_at ? 'That username belonged to a deleted account and is kept for the order history. Choose another one.' : 'That username is already taken.', 'DUPLICATE');
+    }
     throw err;
   }
 }
 
-export function listUsers(db) {
-  return db.prepare('SELECT * FROM users ORDER BY active DESC, username COLLATE NOCASE').all().map(publicUser);
+/** Accounts an admin has deleted (and that are kept only because old orders point at them) are never listed. */
+export function listUsers(db, actor = null) {
+  const rows = db.prepare('SELECT * FROM users WHERE deleted_at IS NULL ORDER BY active DESC, username COLLATE NOCASE').all();
+  // The admin screen also learns, per account, whether Delete Account is allowed (and why not). The server re-checks on delete.
+  return rows.map((u) => (actor ? { ...publicUser(u), delete_blocked: deleteBlocker(db, actor, u) } : publicUser(u)));
 }
 
 export function updateUser(db, actor, id, body) {
   return tx(db, () => {
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
     if (!user) throw new HttpError(404, 'User not found.', 'NOT_FOUND');
     const next = { display_name: user.display_name, role: user.role, active: user.active, password_hash: user.password_hash };
     if (body.display_name !== undefined) next.display_name = String(body.display_name).trim().slice(0, 60) || user.display_name;
@@ -74,6 +80,64 @@ export function updateUser(db, actor, id, body) {
       .run(next.display_name, next.role, next.active, next.password_hash, id);
     if (!next.active || body.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
     return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+  });
+}
+
+// ---- Delete Account ---------------------------------------------------------------------------
+
+/** True when the account appears in any order, payment, audit or price-history record. Those records must keep their names. */
+function hasHistory(db, id) {
+  return !!db.prepare(`SELECT (EXISTS (SELECT 1 FROM orders WHERE cashier_id = ?)
+                           OR EXISTS (SELECT 1 FROM payments WHERE recorded_by = ?)
+                           OR EXISTS (SELECT 1 FROM order_events WHERE user_id = ?)
+                           OR EXISTS (SELECT 1 FROM price_history WHERE changed_by = ?)) AS used`).get(id, id, id, id).used;
+}
+
+/**
+ * Why this account may not be deleted, or null when it may. The same function feeds the Users screen (so the button
+ * explains itself) and the DELETE route (so a hand-made request is refused for the same reasons).
+ *   * your own account            you could lock yourself out
+ *   * the main owner account      the first account ever created, while it is still an admin
+ *   * the last active admin       the shop must always keep one
+ */
+export function deleteBlocker(db, actor, user) {
+  if (actor.id === user.id) return { code: 'SELF_DELETE', message: 'You cannot delete the account you are signed in with.' };
+  const firstId = db.prepare('SELECT MIN(id) AS id FROM users').get().id;
+  if (user.id === firstId && user.role === 'admin') {
+    return { code: 'PROTECTED', message: 'This is the main owner account, so it is protected and cannot be deleted. If it is no longer needed, make another admin and deactivate it from Edit.' };
+  }
+  if (user.role === 'admin' && user.active) {
+    const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1 AND deleted_at IS NULL").get().n;
+    if (admins <= 1) return { code: 'LAST_ADMIN', message: 'Keep at least one active admin. Make another account an admin first.' };
+  }
+  return null;
+}
+
+/**
+ * Delete an account (admin only; the route enforces the role). Past orders, payments and the audit trail are never touched.
+ *   * An account nobody has used (no orders, payments, audit or price-change records) is removed completely: outcome "deleted".
+ *   * An account that appears in those records cannot be erased without breaking them (every order names its cashier), so it is
+ *     closed instead: sign-in is switched off, the password and open sessions are wiped, and it disappears from the Users list.
+ *     Its name stays on the old records. Outcome "removed".
+ * Asking again for an account that is already gone returns "not found", so a double click or a repeated request does nothing twice.
+ */
+export function deleteUser(db, actor, id, now = new Date()) {
+  return tx(db, () => {
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!user) throw new HttpError(404, 'That account was not found. It may already have been deleted.', 'NOT_FOUND');
+    const blocked = deleteBlocker(db, actor, user);
+    if (blocked) throw new HttpError(blocked.code === 'SELF_DELETE' ? 403 : 409, blocked.message, blocked.code);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    let outcome = 'removed';
+    if (!hasHistory(db, id)) {
+      try { db.prepare('DELETE FROM users WHERE id = ?').run(id); outcome = 'deleted'; } catch (err) {
+        if (!/FOREIGN KEY/i.test(String(err.message))) throw err; // something else points at it: close it instead
+      }
+    }
+    if (outcome === 'removed') {
+      db.prepare("UPDATE users SET active = 0, password_hash = 'deleted', deleted_at = ? WHERE id = ?").run(now.toISOString(), id);
+    }
+    return { outcome, user: { id: user.id, username: user.username, display_name: user.display_name, role: user.role } };
   });
 }
 
@@ -119,7 +183,7 @@ export function authenticate(db, username, password) {
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(username ?? '').trim());
   // Always run a hash so a wrong username takes as long as a wrong password.
   const ok = verifyPassword(String(password ?? ''), user?.password_hash ?? 'scrypt:00:00');
-  return user && user.active && ok ? publicUser(user) : null;
+  return user && user.active && !user.deleted_at && ok ? publicUser(user) : null;
 }
 
 // Slow down password guessing: 8 failures per username and address in 15 minutes.

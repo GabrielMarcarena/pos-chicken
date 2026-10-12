@@ -7,6 +7,7 @@ import { openDb } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createUser } from '../src/services/users.js';
+import { createOrder } from '../src/services/orders.js';
 import { createProduct, createOtherProduct, updateFee } from '../src/services/catalog.js';
 
 const require = createRequire(import.meta.url);
@@ -38,7 +39,7 @@ let manager, adminPage;
 const cashier0 = [];
 const step = async (name, fn) => {
   try { await fn(); results.push(`PASS  ${name}`); } catch (err) {
-    results.push(`FAIL  ${name}\n      ${String(err.message).split('\n').slice(0, 4).join(' | ')}`); problems.push(name);
+    results.push(`FAIL  ${name}\n      ${String(err.message).split('\n').slice(0, 12).join(' | ')}`); problems.push(name);
     for (const [i, p] of [cashier0[0], manager, adminPage].filter(Boolean).entries()) {
       await p.screenshot({ path: `/tmp/shots/fail-${problems.length}-${i}.png` }).catch(() => {});
       const info = await p.evaluate(() => ({ open: document.querySelector('#dialog').open, dialog: document.querySelector('#dialog').innerText.slice(0, 300), url: location.hash })).catch(() => null);
@@ -276,11 +277,37 @@ await step('review: warning, locked submit, and Back keeps the order', async () 
 await step('discount is optional: percentage or fixed, needs a reason, and can never be the whole order', async () => {
   assert.equal(await cashier.locator('#discType').inputValue(), 'NONE');
   await cashier.check('#reviewed');
+  // Payments are as in Version 4: "Not recorded" is the starting choice and does not block submitting; only the heading word changed to (required).
+  assert.match(await cashier.locator('#payPanel h3').innerText(), /Payment details \(required\)/);
+  assert.doesNotMatch(await cashier.locator('#payPanel h3').innerText(), /optional/);
+  assert.deepEqual(await cashier.locator('#payMethod option').allInnerTexts(), ['Not recorded', 'Cash', 'GCash', 'Maya', 'Bank transfer', 'Other']);
+  assert.equal(await cashier.locator('#payMethod').inputValue(), 'NONE');
+  assert.equal(await cashier.locator('#payAmount').count(), 0, 'no amount box while the payment is not recorded');
+  assert.equal(await cashier.locator('#payWarn').innerText(), '');
+  assert.match(await cashier.locator('#payPanel').innerText(), /does not charge anyone and does not replace the official receipt/);
+  // Cash: method + amount (starts at the order total). GCash adds date and time, account name, account number and reference number.
+  await cashier.selectOption('#payMethod', 'CASH');
+  assert.equal(await cashier.locator('#payAmount').count(), 1);
+  assert.equal(await cashier.locator('#payWhen, #payName, #payNumber, #payRef').count(), 0, 'cash has no account fields');
+  await cashier.selectOption('#payMethod', 'GCASH');
+  assert.equal(await cashier.locator('#payAmount').count(), 1);
+  assert.deepEqual(await cashier.locator('#payPanel label').allInnerTexts().then((t) => t.map((x) => x.replace(/\s+/g, ' ').trim())),
+    ['How did the customer pay?', 'Amount paid (₱)', 'Payment date and time (optional)', 'Account name (optional)', 'Account or mobile number (optional)', 'Reference number (optional)']);
+  await cashier.selectOption('#payMethod', 'NONE');
+  assert.equal(await cashier.locator('#payAmount').count(), 0, 'back to Not recorded: the amount box goes away again');
   assert.equal(await cashier.locator('#submitBtn').isDisabled(), false, 'no discount is fine');
   await cashier.selectOption('#discType', 'PERCENT');
   await cashier.fill('#discValue', '20');
   assert.equal(await cashier.locator('#submitBtn').isDisabled(), true, 'a discount without a reason blocks submitting');
   assert.match(await cashier.locator('#discWarn').innerText(), /Choose a reason/);
+  // the discount reasons, including the four added in revision 5
+  assert.deepEqual(await cashier.locator('#discReason option').allInnerTexts(), ['Choose a reason', 'Senior citizen', 'Bulk Order Discount', 'Reject', 'Employee Discount', 'VIP', 'Other (explain below)']);
+  for (const [code, text] of [['BULK', 'Bulk Order Discount'], ['REJECT', 'Reject'], ['EMPLOYEE', 'Employee Discount'], ['VIP', 'VIP']]) {
+    await cashier.selectOption('#discReason', code);
+    assert.equal(await cashier.locator('#discWarn').innerText(), '', code);
+    assert.equal(await cashier.locator('#submitBtn').isDisabled(), false, `${text} is a valid reason`);
+    assert.match(await cashier.locator('#totalsBody').innerText(), new RegExp(`Discount: ${text} \\(20%\\)[\\s\\S]*−₱168\\.80`));
+  }
   await cashier.selectOption('#discReason', 'SENIOR');
   assert.equal(await cashier.locator('#discWarn').innerText(), '');
   let totals = await cashier.locator('#totalsBody').innerText();
@@ -389,6 +416,7 @@ await step('change order: loads into checkout and submitting replaces it with a 
   await cut(cashier, 'SMALL').click();
   await cashier.click('#addBtn');
   await cashier.click('[data-action="go-review"]');
+  await cashier.selectOption('#payMethod', 'CASH');   // the payment method is saved with the order, and copied back when the order is changed
   await cashier.check('#reviewed');
   await cashier.click('#submitBtn');
   await cashier.waitForSelector('.order-no-big');
@@ -407,6 +435,7 @@ await step('change order: loads into checkout and submitting replaces it with a 
   await cashier.fill('#amount', '2');
   await cashier.click('#addBtn');
   await cashier.click('[data-action="go-review"]');
+  assert.equal(await cashier.inputValue('#payMethod'), 'CASH', 'the payment method of the original order is filled in on a change');
   await cashier.check('#reviewed');
   assert.equal(await cashier.locator('#submitBtn').isDisabled(), true, 'a reason is required for a change');
   await cashier.selectOption('#reasonCode', 'WRONG_WEIGHT');
@@ -492,6 +521,791 @@ await step('a single chicken still looks and saves exactly as before (1 head, no
   assert.equal(db.prepare('SELECT i.heads FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.order_number = ?').get(number).heads, 1);
 });
 
+// ---- Revision 5: Order List (Kanban board) ----------------------------------------------------------------------------
+const col = (page, name) => page.locator(`.kcol--${name}`);
+const numbersIn = (page, name) => page.locator(`.kcol--${name} .kcard .kcard-no`).allInnerTexts();
+const cardOf = (page, number) => page.locator('.kcard', { has: page.locator(`.kcard-no:text-is("${number}")`) });
+const dbNumbers = (status) => db.prepare("SELECT order_number FROM orders WHERE status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED') AND fulfillment_status = ? ORDER BY id DESC").all(status).map((r) => r.order_number);
+const dbStatus = (number) => db.prepare('SELECT fulfillment_status AS s FROM orders WHERE order_number = ?').get(number).s;
+const moves = (number) => db.prepare("SELECT e.reason_note FROM order_events e JOIN orders o ON o.id = e.order_id WHERE o.order_number = ? AND e.action_type = 'MOVE' ORDER BY e.id").all(number).map((r) => r.reason_note);
+const waitStatus = async (page, number, status) => {
+  for (let i = 0; i < 60; i++) { if (dbStatus(number) === status) return; await page.waitForTimeout(50); }
+  throw new Error(`${number} is ${dbStatus(number)} in the database, expected ${status}`);
+};
+const sameAsDatabase = async (page) => {
+  for (const [name, status] of [['ongoing', 'ONGOING'], ['standby', 'STANDBY'], ['complete', 'COMPLETE']]) {
+    assert.deepEqual([...await numbersIn(page, name)].sort(), dbNumbers(status).sort(), `${name} column matches the saved statuses`);
+  }
+  const all = await page.locator('.kcard .kcard-no').allInnerTexts();
+  assert.equal(new Set(all).size, all.length, 'no order appears twice');
+};
+const menuItems = (page) => page.locator('.kmenu-item').allInnerTexts().then((t) => t.map((x) => x.replace(/\s+/g, ' ').trim()));
+
+// A new open order, made the way the New order screen's Submit does (same API), so the board steps always have one to work with.
+const createOrderWith = async (page, build) => {
+  const ids = {
+    cull: db.prepare("SELECT id FROM products WHERE name = 'Cull Chicken'").get().id,
+    bcull: db.prepare("SELECT id FROM products WHERE name = 'Broiler Breeder Cull'").get().id,
+    egg: db.prepare("SELECT o.id AS option_id, o.product_id FROM other_product_options o WHERE o.unit = 'dozen' LIMIT 1").get(),
+  };
+  const payload = build(ids);
+  return page.evaluate(async (body) => {
+    const key = `e2e-${[...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+    const res = await fetch('/api/orders', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'pos' },
+      body: JSON.stringify({ submission_key: key, ...body }),
+    });
+    if (!res.ok) throw new Error(`order failed ${res.status} ${await res.text()}`);
+    return (await res.json()).order.order_number;
+  }, payload);
+};
+const createOpenOrder = (page) => createOrderWith(page, (ids) => ({ items: [{ product_id: ids.cull, weight: '1.2', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null }], payment: { method: 'CASH' } }));
+const refreshBoard = async (page, number) => {
+  await page.click('#boardRefresh');
+  await page.waitForFunction((n) => [...document.querySelectorAll('.kcard-no')].some((e) => e.textContent === n), number);
+};
+
+await step('Order List: a tab right next to New order; the New order screen still works', async () => {
+  const links = await cashier.locator('.nav a').allInnerTexts();
+  assert.deepEqual(links.slice(0, 3), ['New order', 'Order List', 'Orders']);
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kboard');
+  assert.equal(await cashier.locator('.nav a[aria-current="page"]').innerText(), 'Order List');
+  assert.equal(await cashier.locator('.kcol').count(), 3);
+  assert.deepEqual(await cashier.locator('.kcol h2').allInnerTexts(), ['Ongoing', 'Standby', 'Complete']);
+  await cashier.click('a[href="#/new"]');
+  await cashier.waitForSelector('.product-grid, [data-action="new-order"]');
+  if (await cashier.locator('[data-action="new-order"]').count()) await cashier.click('[data-action="new-order"]');
+  await cashier.waitForSelector('.product-card');
+});
+
+await step('Order List: every open order is on the board once, new orders start in Ongoing, canceled and replaced ones are not shown', async () => {
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kcard');
+  await sameAsDatabase(cashier);
+  const ongoing = await numbersIn(cashier, 'ongoing');
+  assert.ok(ongoing.length >= 3);
+  assert.equal(await cashier.locator('.kcol--standby .kcard').count(), 0);
+  assert.equal(await cashier.locator('.kcol--complete .kcard').count(), 0);
+  assert.match(await col(cashier, 'standby').innerText(), /No standby orders/);
+  const everyNumber = await cashier.locator('.kcard-no').allInnerTexts();
+  for (const hidden of db.prepare("SELECT order_number FROM orders WHERE status IN ('CANCELED','REPLACED')").all()) {
+    assert.ok(!everyNumber.includes(hidden.order_number), `${hidden.order_number} is canceled or replaced and is not on the board`);
+  }
+  // a card carries the order number, customer, items with quantity, date and total
+  const heads = db.prepare("SELECT o.order_number, o.total_centavos FROM orders o JOIN order_items i ON i.order_id = o.id WHERE i.heads = 3 AND o.status = 'COMPLETED' ORDER BY o.id DESC").get();
+  // (Revision 7: a card is folded until it is clicked, so open it to see every line.)
+  const total = new RegExp(`₱${(heads.total_centavos / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`.replace('.', '\\.'));
+  const folded = await cardOf(cashier, heads.order_number).innerText();
+  assert.match(folded, /Walk-in/); assert.match(folded, /Ongoing/); assert.match(folded, /\d{4}|\d{1,2}:\d{2}/); assert.match(folded, total);
+  await cardOf(cashier, heads.order_number).locator('.kcard-toggle').click();
+  const text = await cardOf(cashier, heads.order_number).innerText();
+  assert.match(text, /Customer\s+Walk-in/); assert.match(text, /Broiler Breeder Cull/); assert.match(text, /3 heads · 5\.4 kg/);
+  assert.match(text, /\d{4}/); assert.match(text, total);
+  await cardOf(cashier, heads.order_number).locator('.kcard-toggle').click();
+  await cashier.screenshot({ path: '/tmp/shots/13-board.png' });
+});
+
+await step('Order List: dragging a card shows where it can be dropped, and dropping on its own column does nothing', async () => {
+  const [first] = await numbersIn(cashier, 'ongoing');
+  const box = await cardOf(cashier, first).boundingBox();
+  await cashier.mouse.move(box.x + 40, box.y + 20);
+  await cashier.mouse.down();
+  await cashier.mouse.move(box.x + 160, box.y + 60, { steps: 4 });
+  const target = await col(cashier, 'complete').locator('.kcol-body').boundingBox();
+  await cashier.mouse.move(target.x + 60, target.y + 60, { steps: 6 });
+  await cashier.waitForTimeout(200);
+  await cashier.mouse.move(target.x + 70, target.y + 70, { steps: 2 });
+  await cashier.waitForTimeout(200);
+  assert.equal(await cashier.locator('.kboard').evaluate((e) => e.classList.contains('kboard--dragging')), true, 'the board shows it is in drag mode');
+  assert.equal(await cashier.locator('.kcard--dragging').count(), 1, 'the dragged card looks lifted');
+  assert.equal(await col(cashier, 'complete').evaluate((e) => e.classList.contains('kcol--over')), true, 'the column under the card lights up');
+  assert.equal(await col(cashier, 'ongoing').evaluate((e) => e.classList.contains('kcol--source')), true);
+  assert.equal(await col(cashier, 'standby').locator('.kcol-drop').isVisible(), true, 'a drop hint is shown on the other columns');
+  await cashier.screenshot({ path: '/tmp/shots/14-board-dragging.png' });
+  // back over its own column and let go: nothing happens
+  const own = await col(cashier, 'ongoing').locator('.kcol-body').boundingBox();
+  await cashier.mouse.move(own.x + 60, own.y + 60, { steps: 6 });
+  await cashier.mouse.up();
+  await cashier.waitForTimeout(300);
+  assert.equal(await cashier.locator('.kcol--over, .kcol--source, .kcard--dragging, .kboard--dragging').count(), 0, 'the drag highlights are gone');
+  assert.equal(await cashier.locator('#dialog[open]').count(), 0);
+  assert.equal(dbStatus(first), 'ONGOING');
+  assert.deepEqual(moves(first), []);
+});
+
+let dragged;
+await step('Order List: drag and drop Ongoing -> Standby is saved at once and the card moves, once', async () => {
+  [dragged] = await numbersIn(cashier, 'ongoing');
+  await cardOf(cashier, dragged).dragTo(col(cashier, 'standby').locator('.kcol-body'));
+  await waitStatus(cashier, dragged, 'STANDBY');
+  assert.deepEqual(await numbersIn(cashier, 'standby'), [dragged]);
+  assert.ok(!(await numbersIn(cashier, 'ongoing')).includes(dragged));
+  assert.equal(await col(cashier, 'standby').locator('.kcount').innerText(), '1');
+  await sameAsDatabase(cashier);
+  assert.deepEqual(moves(dragged), ['Ongoing → Standby']);
+});
+
+await step('Order List: Complete asks first; "Not yet" changes nothing, "Yes" saves it and the card stays visible in Complete', async () => {
+  await cardOf(cashier, dragged).dragTo(col(cashier, 'complete').locator('.kcol-body'));
+  await cashier.waitForSelector('#dialog[open]');
+  assert.match(await cashier.locator('#dialog').innerText(), new RegExp(`Mark ${dragged} as Complete\\?[\\s\\S]*customer has already received it`));
+  await cashier.click('[data-dlg-action]:has-text("Not yet")');
+  await cashier.waitForTimeout(250);
+  assert.equal(dbStatus(dragged), 'STANDBY');
+  assert.deepEqual(await numbersIn(cashier, 'standby'), [dragged]);
+  await cardOf(cashier, dragged).dragTo(col(cashier, 'complete').locator('.kcol-body'));
+  await cashier.waitForSelector('#dialog[open]');
+  await cashier.click('[data-dlg-action]:has-text("Yes, the customer has it")');
+  await waitStatus(cashier, dragged, 'COMPLETE');
+  assert.deepEqual(await numbersIn(cashier, 'complete'), [dragged]);
+  assert.ok(!(await numbersIn(cashier, 'ongoing')).includes(dragged) && !(await numbersIn(cashier, 'standby')).includes(dragged));
+  await sameAsDatabase(cashier);
+  assert.deepEqual(moves(dragged), ['Ongoing → Standby', 'Standby → Complete']);
+  await cashier.screenshot({ path: '/tmp/shots/15-board-moved.png' });
+});
+
+let menued;
+await step('Order List: right-click opens Move to Ongoing / Move to Standby / Mark as Complete, and each one saves', async () => {
+  [menued] = await numbersIn(cashier, 'ongoing');
+  await cardOf(cashier, menued).click({ button: 'right' });
+  await cashier.waitForSelector('.kmenu');
+  assert.deepEqual(await menuItems(cashier), ['⏳ Move to Ongoing (current)', '🛍️ Move to Standby', '✅ Mark as Complete', '☆ Bookmark this order', 'View order details']);
+  assert.equal(await cashier.locator('[data-menu-move="ONGOING"]').isDisabled(), true, 'the column it is already in is disabled');
+  await cashier.screenshot({ path: '/tmp/shots/16-board-menu.png' });
+  await cashier.keyboard.press('Escape');
+  assert.equal(await cashier.locator('.kmenu').count(), 0, 'Escape closes the menu');
+  await cardOf(cashier, menued).click({ button: 'right' });
+  await cashier.waitForSelector('.kmenu');
+  await cashier.mouse.click(5, 300);
+  assert.equal(await cashier.locator('.kmenu').count(), 0, 'clicking elsewhere closes the menu');
+  // Move to Standby
+  await cardOf(cashier, menued).click({ button: 'right' });
+  await cashier.click('[data-menu-move="STANDBY"]');
+  await waitStatus(cashier, menued, 'STANDBY');
+  assert.ok((await numbersIn(cashier, 'standby')).includes(menued));
+  // Move to Ongoing
+  await cardOf(cashier, menued).click({ button: 'right' });
+  await cashier.click('[data-menu-move="ONGOING"]');
+  await waitStatus(cashier, menued, 'ONGOING');
+  assert.ok((await numbersIn(cashier, 'ongoing')).includes(menued));
+  // Mark as Complete (asks first)
+  await cardOf(cashier, menued).click({ button: 'right' });
+  await cashier.click('[data-menu-move="COMPLETE"]');
+  await cashier.waitForSelector('#dialog[open]');
+  await cashier.click('[data-dlg-action]:has-text("Yes, the customer has it")');
+  await waitStatus(cashier, menued, 'COMPLETE');
+  assert.deepEqual(await numbersIn(cashier, 'complete').then((n) => n.sort()), [dragged, menued].sort());
+  await sameAsDatabase(cashier);
+  assert.deepEqual(moves(menued), ['Ongoing → Standby', 'Standby → Ongoing', 'Ongoing → Complete']);
+});
+
+await step('Order List: statuses survive a refresh and leaving the screen and coming back; completed orders stay in Complete', async () => {
+  await cashier.reload();
+  await cashier.waitForSelector('.kcard');
+  await sameAsDatabase(cashier);
+  assert.deepEqual(await numbersIn(cashier, 'complete').then((n) => n.sort()), [dragged, menued].sort());
+  await cashier.click('a[href="#/orders"]');
+  await cashier.waitForSelector('#filters');
+  await cashier.click('a[href="#/new"]');
+  await cashier.waitForSelector('.product-grid, [data-action="new-order"]');
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kcard');
+  await sameAsDatabase(cashier);
+  assert.deepEqual(await numbersIn(cashier, 'complete').then((n) => n.sort()), [dragged, menued].sort());
+});
+
+await step('Order List: the order details show the pickup status and every move in the history', async () => {
+  await cardOf(cashier, dragged).locator('.kcard-toggle').click();               // Details sits on the open card
+  await cardOf(cashier, dragged).locator('[data-open]').click();
+  await cashier.waitForSelector('dialog[open] [data-dlg-action]:has-text("Close")');
+  const text = await cashier.locator('dialog').innerText();
+  assert.match(text, /Pickup status\s+Complete/);
+  assert.match(text, /Moved on the Order List[\s\S]*Ongoing → Standby/);
+  assert.match(text, /Moved on the Order List[\s\S]*Standby → Complete/);
+  assert.equal((await cashier.locator('dialog [data-order-status]').innerText()).trim(), 'Complete', 'the details show the same status as the board');
+  assert.equal(db.prepare('SELECT status FROM orders WHERE order_number = ?').get(dragged).status, 'COMPLETED');   // the sale status itself is unchanged
+  await cashier.click('[data-dlg-action]:has-text("Close")');
+  await cashier.waitForTimeout(150);
+});
+
+// ---- Revision 6: the Orders screen shows the same status as the Order List -------------------------------------------------
+const goOrders = async (page) => { await page.click('a[href="#/orders"]'); await page.waitForSelector('#filters'); };
+const searchOrders = async (page, text, status = '') => {
+  await page.fill('#fq', text);
+  await page.selectOption('#fstatus', status);
+  await Promise.all([page.waitForResponse((r) => r.url().includes('/api/orders?')), page.click('#filters button[type="submit"]')]);
+  await page.waitForFunction(() => !document.querySelector('#results .spinner'));
+};
+const orderRow = (page, number) => page.locator('tr[data-order-id]', { has: page.locator(`strong:text-is("${number}")`) });
+const ordersStatus = async (page, number) => {
+  await goOrders(page);
+  await searchOrders(page, number);
+  const row = orderRow(page, number);
+  await row.waitFor();
+  return (await row.locator('[data-order-status]').innerText()).replace(/\s+/g, ' ').trim();
+};
+const boardStage = async (page, number) => {
+  await page.click('a[href="#/board"]');
+  await page.waitForSelector('.kboard .kcard');
+  return page.locator('.kcol', { has: cardOf(page, number) }).locator('h2').innerText();
+};
+const listedNumbers = (page) => page.locator('#results tr[data-order-id] strong').allInnerTexts();
+
+let syncA, syncB;
+await step('Orders screen: an order shows the same status as its Order List column, matched by the order itself, after every move and after a refresh', async () => {
+  syncA = await createOpenOrder(cashier);
+  syncB = await createOpenOrder(cashier);
+  assert.equal(await boardStage(cashier, syncA), 'Ongoing');
+  assert.equal(await ordersStatus(cashier, syncA), 'Ongoing', 'a new order is Ongoing on both screens');
+  assert.equal(await ordersStatus(cashier, syncB), 'Ongoing');
+
+  // drag A to Standby on the Order List
+  await boardStage(cashier, syncA);
+  await cardOf(cashier, syncA).dragTo(col(cashier, 'standby').locator('.kcol-body'));
+  await waitStatus(cashier, syncA, 'STANDBY');
+  assert.equal(await ordersStatus(cashier, syncA), 'Standby', 'the Orders screen follows the move');
+  assert.equal(await ordersStatus(cashier, syncB), 'Ongoing', 'the other order is not touched: the two are told apart by the order, not by position or customer');
+  assert.equal(await boardStage(cashier, syncA), 'Standby');
+
+  // right-click A -> Mark as Complete (asks first)
+  await cardOf(cashier, syncA).click({ button: 'right' });
+  await cashier.locator('.kmenu-item:has-text("Mark as Complete")').click();
+  await cashier.waitForSelector('#dialog[open]');
+  await cashier.click('[data-dlg-action]:has-text("Yes, the customer has it")');
+  await waitStatus(cashier, syncA, 'COMPLETE');
+  assert.equal(await ordersStatus(cashier, syncA), 'Complete');
+  assert.equal(await ordersStatus(cashier, syncB), 'Ongoing');
+
+  // and back to Ongoing from the menu
+  await boardStage(cashier, syncA);
+  await cardOf(cashier, syncA).click({ button: 'right' });
+  await cashier.locator('.kmenu-item:has-text("Move to Ongoing")').click();
+  await waitStatus(cashier, syncA, 'ONGOING');
+  assert.equal(await ordersStatus(cashier, syncA), 'Ongoing', 'moving it back is shown too');
+
+  // the saved status survives a full refresh on either screen
+  await boardStage(cashier, syncA);
+  await cardOf(cashier, syncA).dragTo(col(cashier, 'standby').locator('.kcol-body'));
+  await waitStatus(cashier, syncA, 'STANDBY');
+  await goOrders(cashier);
+  await cashier.reload();
+  await cashier.waitForSelector('#topbar:not([hidden])');
+  assert.equal(await ordersStatus(cashier, syncA), 'Standby', 'after a refresh the Orders screen still shows the saved status');
+  await cashier.reload();
+  await cashier.waitForSelector('#topbar:not([hidden])');
+  assert.equal(await boardStage(cashier, syncA), 'Standby', 'after a refresh the Order List still shows the same');
+
+  // the details show it too, and the sale status itself is untouched
+  await ordersStatus(cashier, syncA);
+  await orderRow(cashier, syncA).click();
+  await cashier.waitForSelector('dialog[open] [data-dlg-action]:has-text("Close")');
+  assert.equal((await cashier.locator('dialog [data-order-status]').innerText()).trim(), 'Standby');
+  assert.match(await cashier.locator('dialog').innerText(), /Pickup status\s+Standby/);
+  await cashier.screenshot({ path: '/tmp/shots/16-orders-detail-status.png' });
+  await cashier.click('[data-dlg-action]:has-text("Close")');
+  assert.equal(db.prepare('SELECT status FROM orders WHERE order_number = ?').get(syncA).status, 'COMPLETED');
+  await searchOrders(cashier, '');
+  await cashier.screenshot({ path: '/tmp/shots/17-orders-status-column.png' });
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kboard');
+});
+
+await step('colours: Ongoing is yellow, Standby is blue and Complete is green, the same on the Order List columns and on the Orders screen', async () => {
+  const expected = { ONGOING: 'rgb(244, 183, 42)', STANDBY: 'rgb(29, 90, 133)', COMPLETE: 'rgb(20, 87, 63)' };
+  const colour = (loc, prop) => loc.first().evaluate((e, p) => getComputedStyle(e)[p], prop);
+  // an order of each kind exists at this point; the Orders list is searched by status so each badge can be read
+  await goOrders(cashier);
+  for (const status of ['ONGOING', 'STANDBY', 'COMPLETE']) {
+    await searchOrders(cashier, '', `pickup:${status}`);
+    const badge = cashier.locator(`#results [data-stage="${status}"]`);
+    assert.ok(await badge.count() >= 1, `an order is ${status}`);
+    assert.equal(await colour(badge, 'backgroundColor'), expected[status], `${status} badge colour on the Orders screen`);
+  }
+  await searchOrders(cashier, '', '');
+  await cashier.screenshot({ path: '/tmp/shots/19-orders-status-colours.png' });
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kboard .kcard');
+  for (const [name, status] of [['ongoing', 'ONGOING'], ['standby', 'STANDBY'], ['complete', 'COMPLETE']]) {
+    assert.equal(await colour(col(cashier, name), 'borderTopColor'), expected[status], `${status} column colour on the Order List`);
+  }
+  // an order that is inside the blue Standby column is the one the Orders screen shows in blue
+  const inStandby = await numbersIn(cashier, 'standby');
+  assert.ok(inStandby.length >= 1);
+  await goOrders(cashier);
+  await searchOrders(cashier, inStandby[0]);
+  const row = orderRow(cashier, inStandby[0]);
+  assert.equal((await row.locator('[data-order-status]').innerText()).trim(), 'Standby');
+  assert.equal(await colour(row.locator('[data-stage]'), 'backgroundColor'), expected.STANDBY);
+  await searchOrders(cashier, '');
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kboard');
+});
+
+await step('Orders screen: the status filter uses the Order List words; Canceled and Replaced orders show that instead of a column', async () => {
+  await goOrders(cashier);
+  assert.deepEqual(await cashier.locator('#fstatus option').allInnerTexts(), ['Any status', 'Ongoing', 'Standby', 'Complete', 'Completed', 'Canceled', 'Refunded', 'Partially refunded', 'Replaced']);
+  for (const [value, status] of [['pickup:ONGOING', 'ONGOING'], ['pickup:STANDBY', 'STANDBY'], ['pickup:COMPLETE', 'COMPLETE']]) {
+    await searchOrders(cashier, '', value);
+    assert.deepEqual((await listedNumbers(cashier)).sort(), dbNumbers(status).sort(), `${value} lists exactly the orders in that Order List column`);
+    const words = await cashier.locator('#results [data-order-status]').evaluateAll((els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+    assert.ok(words.every((w) => w.startsWith(status[0] + status.slice(1).toLowerCase())), `${value}: every row says so (${[...new Set(words)]})`);
+  }
+  await searchOrders(cashier, '', 'sale:CANCELED');
+  const canceled = db.prepare("SELECT order_number FROM orders WHERE status = 'CANCELED'").all().map((r) => r.order_number);
+  assert.ok(canceled.length >= 1);
+  assert.deepEqual((await listedNumbers(cashier)).sort(), canceled.sort());
+  assert.equal(await cashier.locator('#results [data-stage]').count(), 0, 'a canceled order has no Order List status');
+  assert.ok((await cashier.locator('#results [data-order-status]').allInnerTexts()).every((t) => t.trim() === 'Canceled'));
+  await searchOrders(cashier, '', 'sale:COMPLETED');
+  assert.deepEqual((await listedNumbers(cashier)).sort(), db.prepare("SELECT order_number FROM orders WHERE status = 'COMPLETED'").all().map((r) => r.order_number).sort(), 'the sale status filter still works');
+  await searchOrders(cashier, '', '');
+  const everything = await cashier.locator('#results [data-order-status]').evaluateAll((els) => els.map((e) => e.textContent.replace(/\s+/g, ' ').trim()));
+  assert.equal(everything.length, db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 'every order of the day is listed once');
+  assert.ok(everything.every((w) => /^(Ongoing|Standby|Complete|Canceled|Replaced|(Ongoing|Standby|Complete) (Refunded|Partially refunded))$/.test(w)), `no row says "Completed": ${[...new Set(everything)]}`);
+  // every row agrees with the saved status of that same order id
+  const rows = await cashier.locator('#results tr[data-order-id]').evaluateAll((els) => els.map((e) => [Number(e.dataset.orderId), e.querySelector('[data-order-status]').textContent.replace(/\s+/g, ' ').trim()]));
+  for (const [id, text] of rows) {
+    const o = db.prepare('SELECT status, fulfillment_status AS f FROM orders WHERE id = ?').get(id);
+    const expected = ['COMPLETED', 'REFUNDED', 'PARTIALLY_REFUNDED'].includes(o.status) ? o.f[0] + o.f.slice(1).toLowerCase() : { CANCELED: 'Canceled', REPLACED: 'Replaced' }[o.status];
+    assert.ok(text.startsWith(expected), `order ${id}: ${text} vs ${expected}`);
+  }
+  await cashier.screenshot({ path: '/tmp/shots/18-orders-filter.png' });
+  await cashier.click('a[href="#/board"]');
+  await cashier.waitForSelector('.kboard');
+});
+
+await step('Orders screen: while it is open it picks up a status moved on another device, without a click, and stops asking when you leave', async () => {
+  const watcher = await newPage();
+  await watcher.clock.install();                       // fake timers: the 20-second refresh can be fast-forwarded
+  await login(watcher, 'cash', 'cashier-pass-1');
+  await goOrders(watcher);
+  await searchOrders(watcher, syncB);
+  assert.equal((await orderRow(watcher, syncB).locator('[data-order-status]').innerText()).trim(), 'Ongoing');
+  const id = db.prepare('SELECT id FROM orders WHERE order_number = ?').get(syncB).id;
+  await cashier.evaluate(async (orderId) => {           // another device moves it
+    const res = await fetch(`/api/orders/${orderId}/fulfillment`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'pos' }, body: JSON.stringify({ status: 'STANDBY' }) });
+    if (!res.ok) throw new Error(`move failed ${res.status}`);
+  }, id);
+  await watcher.clock.runFor(21000);
+  await watcher.waitForFunction((n) => [...document.querySelectorAll('tr[data-order-id]')].some((r) => r.textContent.includes(n) && r.querySelector('[data-order-status]').textContent.trim() === 'Standby'), syncB);
+  // leaving the screen stops the refresh
+  await watcher.click('a[href="#/board"]');
+  await watcher.waitForSelector('.kboard .kcard');
+  let asked = 0;
+  watcher.on('request', (r) => { if (/\/api\/orders\?/.test(r.url())) asked++; });
+  await watcher.clock.runFor(70000);
+  await watcher.waitForTimeout(300);
+  assert.equal(asked, 0, 'the Orders list is not requested again after leaving the screen');
+  await watcher.context().close();
+  await cashier.waitForTimeout(100);
+});
+
+await step('Order List: another person sees the same saved board, and a refresh shows what they changed', async () => {
+  const other = await newPage();
+  await login(other, 'mgr', 'manager-pass-1');
+  await other.click('a[href="#/board"]');
+  await other.waitForSelector('.kcard');
+  await sameAsDatabase(other);
+  assert.equal(await other.locator('.nav a').count() > 3, true, 'a manager has the same tab');
+  const [victim] = await numbersIn(other, 'ongoing');
+  await cardOf(other, victim).dragTo(col(other, 'standby').locator('.kcol-body'));
+  await waitStatus(other, victim, 'STANDBY');
+  assert.ok(!(await numbersIn(cashier, 'standby')).includes(victim), 'not yet refreshed on the cashier screen');
+  await cashier.click('#boardRefresh');
+  await cashier.waitForFunction((n) => [...document.querySelectorAll('.kcol--standby .kcard-no')].some((e) => e.textContent === n), victim);
+  await sameAsDatabase(cashier);
+  assert.deepEqual(moves(victim), ['Ongoing → Standby']);
+  assert.equal(db.prepare("SELECT u.display_name AS n FROM order_events e JOIN users u ON u.id = e.user_id JOIN orders o ON o.id = e.order_id WHERE o.order_number = ? AND e.action_type = 'MOVE'").get(victim).n, 'Manager');
+  assert.deepEqual(other.errors, []);
+  await other.context().close();
+});
+
+await step('Order List: an order canceled on the Orders screen leaves the board; its number is not reused', async () => {
+  const open = await createOpenOrder(cashier);
+  await refreshBoard(cashier, open);
+  assert.ok((await numbersIn(cashier, 'ongoing')).includes(open), 'a newly submitted order appears in Ongoing');
+  const id = db.prepare('SELECT id FROM orders WHERE order_number = ?').get(open).id;
+  await cashier.evaluate(async (orderId) => {
+    const res = await fetch(`/api/orders/${orderId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'pos' }, body: JSON.stringify({ reason_code: 'CUSTOMER_CHANGED_MIND' }) });
+    if (!res.ok) throw new Error(`cancel failed ${res.status}`);
+  }, id);
+  await cashier.click('#boardRefresh');
+  await cashier.waitForFunction((n) => ![...document.querySelectorAll('.kcard-no')].some((e) => e.textContent === n), open);
+  await sameAsDatabase(cashier);
+  assert.equal(dbStatus(open), 'ONGOING', 'the pickup status is only a record; the sale status is what changed');
+});
+
+await step('Order List: the keyboard works too (Alt + arrow keys on a focused card)', async () => {
+  const open = await createOpenOrder(cashier);
+  await refreshBoard(cashier, open);
+  await cardOf(cashier, open).focus();
+  await cashier.keyboard.press('Alt+ArrowRight');
+  await waitStatus(cashier, open, 'STANDBY');
+  await cashier.waitForSelector('.kcard--saving', { state: 'detached' });     // the screen has finished saving, so the next key is accepted
+  await cardOf(cashier, open).focus();
+  await cashier.keyboard.press('Alt+ArrowLeft');
+  await waitStatus(cashier, open, 'ONGOING');
+  await sameAsDatabase(cashier);
+});
+
+await step('Order List: on a phone the board scrolls sideways (not the page) and the Move button changes the status', async () => {
+  const phone = await newPage({ width: 390, height: 844 });
+  await login(phone, 'cash', 'cashier-pass-1');
+  await phone.click('a[href="#/board"]');
+  await phone.waitForSelector('.kcard');
+  const sizes = await phone.evaluate(() => ({ page: document.documentElement.scrollWidth - document.documentElement.clientWidth, board: document.querySelector('.kboard').scrollWidth - document.querySelector('.kboard').clientWidth }));
+  assert.ok(sizes.page <= 1, `the page is ${sizes.page}px too wide`);
+  assert.ok(sizes.board > 100, 'the board itself scrolls sideways');
+  await phone.screenshot({ path: '/tmp/shots/17-board-phone.png' });
+  const open = await createOpenOrder(phone);
+  await refreshBoard(phone, open);
+  await cardOf(phone, open).locator('[data-move-menu]').click();
+  await phone.waitForSelector('.kmenu');
+  assert.equal(await phone.locator('.kmenu').evaluate((m) => { const r = m.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth; }), true, 'the menu stays on the screen');
+  await phone.click('[data-menu-move="STANDBY"]');
+  await waitStatus(phone, open, 'STANDBY');
+  await phone.waitForSelector('.kcard--saving', { state: 'detached' });       // the screen has finished redrawing
+  assert.ok((await numbersIn(phone, 'standby')).includes(open));
+  await cardOf(phone, open).locator('[data-move-menu]').click();             // Playwright scrolls the card into view first
+  await phone.click('[data-menu-move="ONGOING"]');
+  await waitStatus(phone, open, 'ONGOING');
+  await phone.waitForSelector('.kcard--saving', { state: 'detached' });
+  assert.ok((await numbersIn(phone, 'ongoing')).includes(open));
+  assert.deepEqual(phone.errors, []);
+  await phone.context().close();
+});
+
+// ---- Revision 7: compact cards, bookmarks, sorting ------------------------------------------------------------------------
+const eventCount = () => db.prepare('SELECT COUNT(*) AS n FROM order_events').get().n;
+const saleSnapshot = () => JSON.stringify({
+  orders: db.prepare('SELECT id, order_number, customer_number, status, fulfillment_status, subtotal_centavos, discount_centavos, total_centavos, refund_centavos, submitted_at, cashier_id FROM orders ORDER BY id').all(),
+  payments: db.prepare('SELECT * FROM payments ORDER BY id').all(),
+  items: db.prepare('SELECT * FROM order_items ORDER BY id').all(),
+  events: eventCount(),
+});
+const gotoBoard = async (page) => { await page.click('a[href="#/board"]'); await page.waitForSelector('.kboard .kcard'); };
+const heightOf = (loc) => loc.evaluate((e) => e.getBoundingClientRect().height);
+const isOpen = async (page, number) => (await cardOf(page, number).locator('.kcard-toggle').getAttribute('aria-expanded')) === 'true';
+const star = (page, number) => cardOf(page, number).locator('[data-bookmark]');
+const isStarred = async (page, number) => (await star(page, number).getAttribute('aria-pressed')) === 'true';
+const dbMarked = (number) => db.prepare('SELECT bookmarked FROM orders WHERE order_number = ?').get(number).bookmarked;
+const overflowing = (loc) => loc.evaluate((e) => e.scrollWidth > e.clientWidth + 1);
+
+let rich;
+await step('Order List: cards are compact and folded by default; clicking opens the full order, clicking again folds it, and no button opens a card or changes a status by accident', async () => {
+  rich = await createOrderWith(cashier, (ids) => ({
+    customer_number: 'Maria Santos',
+    items: [
+      { product_id: ids.bcull, weight: '4', feather: 'POUR', dara: false, cut: 'SLICE', slice_size: 'SMALL' },
+      { product_id: ids.cull, weight: '2', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null },
+    ],
+    other_items: [{ other_product_id: ids.egg.product_id, option_id: ids.egg.option_id, quantity: '2' }],
+    discount: { type: 'FIXED', value: '20', reason_code: 'BULK' },
+    payment: { method: 'GCASH', account_name: 'Maria Santos', account_number: '09171234567', reference: 'REF-4421' },
+  }));
+  await gotoBoard(cashier);
+  await refreshBoard(cashier, rich);
+  assert.equal(await cashier.locator('.kcard-detail').count(), 0, 'every card starts folded');
+  assert.equal(await cashier.locator('.kcard-toggle[aria-expanded="true"]').count(), 0);
+  const card = cardOf(cashier, rich);
+  const foldedHeight = await heightOf(card);
+  assert.ok(foldedHeight < 190, `a folded card is ${foldedHeight}px tall`);
+  const text = (await card.innerText()).replace(/\s+/g, ' ');
+  assert.match(text, new RegExp(rich)); assert.match(text, /Maria Santos/); assert.match(text, /Ongoing/); assert.match(text, /Broiler Breeder Cull 4\.0 kg/); assert.match(text, /\+ 2 more/);
+  assert.match(text, /Oct \d+, \d+:\d\d/); assert.match(text, /₱[\d,]+\.\d\d/);
+  assert.ok(!/Garlic|Eggs|REF-4421|Cashier|Payment|Discount|Po-ur/.test(text), 'the folded card leaves the details out');
+  await cashier.screenshot({ path: '/tmp/shots/20-board-folded.png' });
+
+  const before = saleSnapshot();
+  const requests = [];
+  const log = (r) => { if (r.url().includes('/api/') && r.method() !== 'GET') requests.push(`${r.method()} ${new URL(r.url()).pathname}`); };
+  cashier.on('request', log);
+
+  // clicking the card body opens it ...
+  await card.locator('.kcard-cust').click();
+  await card.locator('.kcard-detail').waitFor();
+  assert.equal(await isOpen(cashier, rich), true);
+  const open = (await card.innerText()).replace(/\s+/g, ' ');
+  for (const part of [/Customer Maria Santos/, /Ordered Oct/, /Broiler Breeder Cull 4\.0 kg/, /Po-ur & Slice/, /Small pieces/, /Cull Chicken 2\.0 kg/, /Live/, /Eggs \(Small\)/, /2 dozen/, /Subtotal ₱/, /Discount −₱20\.00 \(Bulk Order Discount\)/, /Total ₱/, /Payment GCash ₱[\d,.]+ · Ref REF-4421/, /Cashier Cashier/, /Move/, /Details/, /Show less/]) {
+    assert.match(open, part);
+  }
+  assert.ok(!/09171234567|Maria S•••/.test(open), 'no payment account details on the board');
+  assert.ok(await heightOf(card) > foldedHeight + 100, 'the open card shows more');
+  await cashier.screenshot({ path: '/tmp/shots/21-board-open.png' });
+  // ... clicking the header area again folds it
+  await card.locator('.kcard-cust').click();
+  assert.equal(await card.locator('.kcard-detail').count(), 0);
+  assert.equal(await isOpen(cashier, rich), false);
+  // the arrow opens, "Show less" folds
+  await card.locator('.kcard-toggle').click();
+  assert.equal(await isOpen(cashier, rich), true);
+  // reading an open card (clicking inside the details) does not fold it
+  await card.locator('.kcard-facts').click();
+  assert.equal(await isOpen(cashier, rich), true, 'clicking the details does not fold the card');
+  await card.locator('.kcard-actions [data-toggle]').click();
+  assert.equal(await isOpen(cashier, rich), false);
+  // the keyboard: Enter opens, Space folds
+  await card.focus();
+  await cashier.keyboard.press('Enter');
+  assert.equal(await isOpen(cashier, rich), true);
+  await cardOf(cashier, rich).focus();
+  await cashier.keyboard.press(' ');
+  assert.equal(await isOpen(cashier, rich), false);
+
+  // Move, the star and Details work on their own: none of them opens or folds the card
+  await card.locator('[data-move-menu]').click();
+  await cashier.waitForSelector('.kmenu');
+  assert.equal(await isOpen(cashier, rich), false, 'Move does not open the card');
+  await cashier.keyboard.press('Escape');
+  await star(cashier, rich).click();
+  assert.equal(await isOpen(cashier, rich), false, 'the star does not open the card');
+  await star(cashier, rich).click();
+  await card.locator('.kcard-toggle').click();
+  await card.locator('[data-open]').click();
+  await cashier.waitForSelector('dialog[open] [data-dlg-action]:has-text("Close")');
+  assert.match(await cashier.locator('dialog').innerText(), new RegExp(rich));
+  await cashier.click('[data-dlg-action]:has-text("Close")');
+  await cashier.waitForTimeout(150);
+  await cashier.waitForSelector('dialog[open]', { state: 'detached' }).catch(() => {});
+  assert.equal(await isOpen(cashier, rich), true, 'the card is still open after the details dialog');
+  await card.locator('.kcard-toggle').click();
+
+  cashier.off('request', log);
+  assert.deepEqual(requests.filter((r) => !r.includes('/bookmark')), [], 'opening, folding and Details sent nothing to the server');
+  assert.equal(dbStatus(rich), 'ONGOING', 'the status never changed');
+  assert.equal(saleSnapshot(), before, 'no order, payment, line or audit row changed');
+  assert.equal(dbMarked(rich), 0);
+});
+
+await step('Order List: an open card stays open when the board refreshes; long names and long item lists stay inside the card, on a desktop and on a phone', async () => {
+  const wide = 'W'.repeat(40);
+  const long = await createOrderWith(cashier, (ids) => ({
+    customer_number: wide,
+    items: Array.from({ length: 8 }, () => ({ product_id: ids.bcull, weight: '1.5', feather: 'POUR', dara: true, cut: 'SLICE', slice_size: 'LARGE' })),
+    other_items: [{ other_product_id: ids.egg.product_id, option_id: ids.egg.option_id, quantity: '1' }],
+    payment: { method: 'CASH' },
+  }));
+  await refreshBoard(cashier, long);
+  const card = cardOf(cashier, long);
+  const check = async (page, c, label) => {
+    assert.equal(await overflowing(c), false, `${label}: the card does not overflow sideways`);
+    assert.equal(await overflowing(c.locator('xpath=..')), false, `${label}: the column does not scroll sideways`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth <= 1), true, `${label}: the page does not scroll sideways`);
+    const inside = await c.evaluate((e) => { const r = e.getBoundingClientRect(), p = e.parentElement.getBoundingClientRect(); return r.left >= p.left - 1 && r.right <= p.right + 1; });
+    assert.equal(inside, true, `${label}: the card stays inside its column`);
+  };
+  await check(cashier, card, 'folded');
+  assert.ok(await heightOf(card) < 230, 'a folded card with 9 lines and a very long name is still compact');
+  assert.match((await card.innerText()).replace(/\s+/g, ' '), /\+ 8 more/);
+  await card.locator('.kcard-toggle').click();
+  assert.equal(await card.locator('.kcard-lines li').count(), 9, 'the open card lists every line');
+  await check(cashier, card, 'open');
+  // a refresh (the button, and the 20-second timer does the same call) keeps it open
+  await Promise.all([cashier.waitForResponse((r) => r.url().includes('/api/board')), cashier.click('#boardRefresh')]);
+  await cashier.waitForTimeout(150);
+  assert.equal(await isOpen(cashier, long), true, 'still open after a refresh');
+  // leaving the screen and coming back starts folded again
+  await cashier.click('a[href="#/orders"]'); await cashier.waitForSelector('#filters');
+  await gotoBoard(cashier);
+  assert.equal(await cashier.locator('.kcard-detail').count(), 0, 'every card starts folded on a new visit');
+  // phone
+  const phone = await newPage({ width: 390, height: 844 });
+  await login(phone, 'cash', 'cashier-pass-1');
+  await gotoBoard(phone);
+  const pc = cardOf(phone, long);
+  await pc.scrollIntoViewIfNeeded();
+  await check(phone, pc, 'phone folded');
+  await pc.locator('.kcard-toggle').click();
+  await check(phone, pc, 'phone open');
+  await phone.screenshot({ path: '/tmp/shots/22-board-phone-open.png' });
+  assert.deepEqual(phone.errors, []);
+  await phone.context().close();
+});
+
+const markedNumbers = () => db.prepare("SELECT order_number FROM orders WHERE bookmarked = 1 AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')").all().map((r) => r.order_number);
+await step('Order List: the star bookmarks an order without changing its status; it persists after a refresh and stays with the order when it moves', async () => {
+  await gotoBoard(cashier);
+  const twin = await createOrderWith(cashier, (ids) => ({ customer_number: 'Maria Santos', items: [{ product_id: ids.cull, weight: '1', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null }], payment: { method: 'CASH' } }));
+  await refreshBoard(cashier, twin);
+  const before = saleSnapshot();
+  assert.equal(await isStarred(cashier, rich), false);
+  assert.match(await star(cashier, rich).locator('xpath=ancestor::article').getAttribute('class'), /^(?!.*kcard--bookmarked)/);
+  const puts = [];
+  const log = (r) => { if (r.method() === 'PUT' && r.url().includes('/bookmark')) puts.push(r.url()); };
+  cashier.on('request', log);
+  await star(cashier, rich).dblclick();                                   // a double click: one request, ends bookmarked
+  await cashier.waitForFunction((n) => document.querySelector(`[data-card] [data-bookmark][aria-pressed="true"]`) && [...document.querySelectorAll('.kcard')].some((c) => c.querySelector('.kcard-no').textContent === n && c.querySelector('[data-bookmark]').getAttribute('aria-pressed') === 'true'), rich);
+  await cashier.waitForTimeout(250);
+  cashier.off('request', log);
+  assert.equal(puts.length, 1, 'a double click sends one request');
+  assert.equal(await isStarred(cashier, rich), true);
+  assert.equal(dbMarked(rich), 1);
+  assert.match(await cardOf(cashier, rich).getAttribute('class'), /kcard--bookmarked/);
+  assert.equal((await star(cashier, rich).innerText()).trim(), '★');
+  assert.equal(await isStarred(cashier, twin), false, 'the other order (same customer) is not bookmarked');
+  assert.equal(dbStatus(rich), 'ONGOING', 'bookmarking does not change the status');
+  assert.equal(await cashier.locator('#markCount').innerText(), String(markedNumbers().length));
+  await cashier.screenshot({ path: '/tmp/shots/23-board-bookmarked.png' });
+  // after a page refresh it is still bookmarked, and it is not pushed to the top
+  await cashier.reload();
+  await cashier.waitForSelector('.kcard');
+  assert.equal(await isStarred(cashier, rich), true, 'still bookmarked after a refresh');
+  const ongoingNumbers = await numbersIn(cashier, 'ongoing');
+  assert.ok(ongoingNumbers.indexOf(rich) > 0 || ongoingNumbers.length === 1, 'a bookmarked order keeps its place in the sort; it is not forced to the top');
+  // it follows the order from column to column
+  for (const target of ['STANDBY', 'ONGOING']) {
+    await cardOf(cashier, rich).locator('[data-move-menu]').click();
+    await cashier.click(`[data-menu-move="${target}"]`);
+    await waitStatus(cashier, rich, target);
+    await cashier.waitForSelector('.kcard--saving', { state: 'detached' });
+    assert.ok((await numbersIn(cashier, target.toLowerCase())).includes(rich));
+    assert.equal(await isStarred(cashier, rich), true, `still bookmarked in ${target}`);
+    assert.equal(await isStarred(cashier, twin), false);
+  }
+  // the right-click menu can do it too
+  await cardOf(cashier, twin).click({ button: 'right' });
+  assert.match((await menuItems(cashier)).join('|'), /☆ Bookmark this order/);
+  await cashier.click('[data-menu-bookmark]');
+  await cashier.waitForFunction((n) => [...document.querySelectorAll('.kcard')].some((c) => c.querySelector('.kcard-no').textContent === n && c.querySelector('[data-bookmark]').getAttribute('aria-pressed') === 'true'), twin);
+  assert.equal(dbMarked(twin), 1);
+  // and the star switches it off again
+  await star(cashier, twin).click();
+  await cashier.waitForFunction((n) => [...document.querySelectorAll('.kcard')].some((c) => c.querySelector('.kcard-no').textContent === n && c.querySelector('[data-bookmark]').getAttribute('aria-pressed') === 'false'), twin);
+  assert.equal(dbMarked(twin), 0);
+  await sameAsDatabase(cashier);
+  // the two moves wrote two audit rows (Ongoing -> Standby -> Ongoing); bookmarking wrote none, and no sale data changed
+  assert.equal(eventCount(), JSON.parse(before).events + 2);
+  assert.equal(JSON.stringify(JSON.parse(saleSnapshot()).orders), JSON.stringify(JSON.parse(before).orders), 'every order row is as it was');
+  assert.equal(JSON.stringify(JSON.parse(saleSnapshot()).payments), JSON.stringify(JSON.parse(before).payments));
+  assert.equal(JSON.stringify(JSON.parse(saleSnapshot()).items), JSON.stringify(JSON.parse(before).items));
+  // another person sees the same bookmark
+  const colleague = await newPage();
+  await login(colleague, 'mgr', 'manager-pass-1');
+  await colleague.click('a[href="#/board"]');
+  await colleague.waitForSelector('.kcard');
+  await colleague.waitForSelector(`.kcard:has(.kcard-no:text-is("${rich}")) [data-bookmark][aria-pressed="true"]`);
+  await colleague.context().close();
+});
+
+await step('Order List: the Bookmarked filter shows only bookmarked orders, keeps the columns, and "All orders" brings everything back', async () => {
+  await gotoBoard(cashier);
+  const other = await createOpenOrder(cashier);
+  await refreshBoard(cashier, other);
+  const total = await cashier.locator('.kcard').count();
+  const marked = markedNumbers();
+  assert.ok(marked.includes(rich) && marked.length < total);
+  await cashier.click('.seg-btn[data-filter="bookmarked"]');
+  assert.equal(await cashier.locator('.seg-btn[data-filter="bookmarked"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await cashier.locator('.kcol').count(), 3, 'the three columns are still there');
+  const shown = await cashier.locator('.kcard-no').allInnerTexts();
+  assert.deepEqual([...shown].sort(), [...marked].sort(), 'exactly the bookmarked orders are shown');
+  assert.ok(await cashier.locator('.kcard').evaluateAll((cards) => cards.every((c) => c.classList.contains('kcard--bookmarked'))));
+  assert.match(await cashier.locator('#boardFilterNote').innerText(), new RegExp(`Showing bookmarked orders only: ${marked.length} of ${total}`));
+  for (const status of ['ongoing', 'standby', 'complete']) {
+    const n = await numbersIn(cashier, status);
+    assert.equal(await col(cashier, status).locator('.kcount').innerText(), String(n.length));
+    if (!n.length) assert.match(await col(cashier, status).innerText(), new RegExp(`No bookmarked ${status} orders`));
+  }
+  await cashier.screenshot({ path: '/tmp/shots/24-board-filter.png' });
+  // un-starring inside the filter removes the card from view, and it is only hidden: it is still on the board
+  await star(cashier, rich).click();
+  await cashier.waitForFunction((n) => ![...document.querySelectorAll('.kcard-no')].some((e) => e.textContent === n), rich);
+  assert.equal(dbMarked(rich), 0);
+  await cashier.click('#boardFilterNote [data-filter="all"]');
+  assert.equal(await cashier.locator('#boardFilterNote').innerText(), '');
+  assert.equal(await cashier.locator('.kcard').count(), total, 'every order is back');
+  assert.ok((await numbersIn(cashier, 'ongoing')).includes(rich));
+  await sameAsDatabase(cashier);
+  await star(cashier, rich).click();                                      // bookmark it again for the next checks
+  for (let i = 0; i < 40 && dbMarked(rich) !== 1; i++) await cashier.waitForTimeout(50);
+  assert.equal(dbMarked(rich), 1);
+});
+
+// seven orders with chosen names, dates and numbers, so every sort has one right answer
+const SORT_SEED = [
+  ['S1', 'ORD-20260301-001', 'Zed',    '2026-03-01T01:00:00.000Z', 'ONGOING'],
+  ['S2', 'ORD-20260301-002', 'abby',   '2026-03-01T02:00:00.000Z', 'ONGOING'],
+  ['S3', 'ORD-20260228-007', 'Carlo',  '2026-02-28T05:00:00.000Z', 'ONGOING'],
+  ['S4', 'ORD-20260302-001', 'WALK-IN', '2026-03-02T01:00:00.000Z', 'ONGOING'],
+  ['S5', 'ORD-20260227-003', 'Bea',    'not-a-date',               'ONGOING'],
+  ['S6', 'ORD-20260301-003', 'Mike',   '2026-03-01T03:00:00.000Z', 'STANDBY'],
+  ['S7', 'ORD-20260301-004', 'Anna',   '2026-03-01T04:00:00.000Z', 'STANDBY'],
+];
+const seedNo = Object.fromEntries(SORT_SEED.map(([k, no]) => [k, no]));
+const seedSet = new Set(Object.values(seedNo));
+const seeded = (names) => names.filter((n) => seedSet.has(n));
+await step('Order List: each sort option orders every column correctly, on stored dates, names and numbers; a missing date is handled; sorting changes no data', async () => {
+  const cashierId = db.prepare("SELECT id FROM users WHERE username = 'cash'").get().id;
+  for (const [k, no, name, at, ful] of SORT_SEED) {
+    db.prepare(`INSERT INTO orders (order_number, business_date, customer_number, status, subtotal_centavos, total_centavos, cashier_id, submitted_at, submission_key, fulfillment_status)
+                VALUES (?, ?, ?, 'COMPLETED', 5000, 5000, ?, ?, ?, ?)`).run(no, no.slice(4, 12).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3'), name, cashierId, at, `sort-seed-${k}-xxxxxxxx`, ful);
+  }
+  await gotoBoard(cashier);
+  await cashier.click('#boardRefresh');
+  await cashier.waitForFunction((n) => [...document.querySelectorAll('.kcard-no')].some((e) => e.textContent === n), seedNo.S7);
+  const snapshot = saleSnapshot();
+  const S = seedNo;
+  const expected = {
+    newest: { ongoing: [S.S4, S.S2, S.S1, S.S3, S.S5], standby: [S.S7, S.S6] },
+    oldest: { ongoing: [S.S3, S.S1, S.S2, S.S4, S.S5], standby: [S.S6, S.S7] },
+    name_az: { ongoing: [S.S2, S.S5, S.S3, S.S1, S.S4], standby: [S.S7, S.S6] },
+    name_za: { ongoing: [S.S1, S.S3, S.S5, S.S2, S.S4], standby: [S.S6, S.S7] },
+    number: { ongoing: [S.S5, S.S3, S.S1, S.S2, S.S4], standby: [S.S6, S.S7] },
+  };
+  assert.deepEqual(await cashier.locator('#boardSort option').allInnerTexts(), ['Newest first', 'Oldest first', 'Customer A–Z', 'Customer Z–A', 'Order number']);
+  for (const [mode, want] of Object.entries(expected)) {
+    await cashier.selectOption('#boardSort', mode);
+    for (const column of ['ongoing', 'standby']) {
+      assert.deepEqual(seeded(await numbersIn(cashier, column)), want[column], `${mode}: ${column}`);
+    }
+    // every seeded card stays in the column its saved status says, and the page agrees with the database
+    for (const [k, no, , , ful] of SORT_SEED) assert.equal(dbStatus(no), ful, `${k} was not moved by sorting`);
+    await sameAsDatabase(cashier);
+  }
+  assert.match(await cardOf(cashier, S.S5).innerText(), /Date unknown/, 'an order with no usable date says so and still shows');
+  assert.equal(saleSnapshot(), snapshot, 'sorting changed no order, payment, line or audit row');
+
+  // the sort choice survives a refresh of the page
+  await cashier.selectOption('#boardSort', 'name_za');
+  await cashier.reload();
+  await cashier.waitForSelector('.kcard');
+  assert.equal(await cashier.inputValue('#boardSort'), 'name_za');
+  assert.deepEqual(seeded(await numbersIn(cashier, 'ongoing')), expected.name_za.ongoing);
+
+  // sorting and the Bookmarked filter together
+  for (const no of [S.S5, S.S3, S.S7]) await star(cashier, no).click();
+  for (let i = 0; i < 60 && !(dbMarked(S.S5) && dbMarked(S.S3) && dbMarked(S.S7)); i++) await cashier.waitForTimeout(50);
+  await cashier.click('.seg-btn[data-filter="bookmarked"]');
+  const together = {
+    newest: { ongoing: [S.S3, S.S5], standby: [S.S7] },
+    oldest: { ongoing: [S.S3, S.S5], standby: [S.S7] },
+    name_az: { ongoing: [S.S5, S.S3], standby: [S.S7] },
+    name_za: { ongoing: [S.S3, S.S5], standby: [S.S7] },
+    number: { ongoing: [S.S5, S.S3], standby: [S.S7] },
+  };
+  for (const [mode, want] of Object.entries(together)) {
+    await cashier.selectOption('#boardSort', mode);
+    for (const column of ['ongoing', 'standby']) assert.deepEqual(seeded(await numbersIn(cashier, column)), want[column], `bookmarked + ${mode}: ${column}`);
+    const shown = await cashier.locator('.kcard-no').allInnerTexts();
+    assert.deepEqual([...shown].sort(), markedNumbers().sort(), `bookmarked + ${mode}: only bookmarked orders`);
+  }
+  await cashier.screenshot({ path: '/tmp/shots/25-board-sorted-bookmarked.png' });
+  // a move while filtered and sorted keeps the bookmark and the order of the column
+  await cardOf(cashier, S.S7).locator('[data-move-menu]').click();
+  await cashier.click('[data-menu-move="ONGOING"]');
+  await waitStatus(cashier, S.S7, 'ONGOING');
+  await cashier.waitForSelector('.kcard--saving', { state: 'detached' });
+  await cashier.selectOption('#boardSort', 'name_az');
+  assert.deepEqual(seeded(await numbersIn(cashier, 'ongoing')), [S.S7, S.S5, S.S3], 'Anna, Bea, Carlo');
+  assert.equal(dbMarked(S.S7), 1);
+  await cashier.click('.seg-btn[data-filter="all"]');
+  await cashier.selectOption('#boardSort', 'newest');
+  assert.deepEqual(saleSnapshot().length > 0, true);
+  assert.deepEqual(await cashier.evaluate(() => [...document.querySelectorAll('.kcard--bookmarked')].length > 0), true);
+  assert.deepEqual(cashier.errors, []);
+});
+
 await step('daily sales report: a cashier downloads the paper-form report (Excel) and the line-by-line CSV, with their own sales only', async () => {
   await cashier.click('a[href="#/orders"]');
   await cashier.waitForSelector('#dailyXlsx');
@@ -525,13 +1339,15 @@ await step('manager can refund; price field is locked for non-admins; export dow
   await manager.fill('#fq', 'ORD-');
   await manager.click('#filters button[type="submit"]');
   await manager.waitForSelector('tr.clickable');
-  await manager.locator('tr.clickable:has-text("Completed")').first().click();
+  await manager.locator('tr.clickable:not(.row--canceled):not(.row--replaced):not(.row--refunded)').first().click();
   await manager.waitForSelector('dialog[open] [data-dlg-action]:has-text("Close")');
   assert.equal(await manager.locator('[data-dlg-action]:has-text("Refund order")').count(), 1);
   await manager.click('[data-dlg-action]:has-text("Refund order")');
   await manager.selectOption('#rCode', 'CUSTOMER_NOT_SATISFIED');
   await manager.click('[data-dlg-action]:has-text("Refund this order")');
   await manager.waitForSelector('tr.row--refunded');
+  const refundedStatus = (await manager.locator('tr.row--refunded [data-order-status]').first().innerText()).replace(/\s+/g, ' ').trim();
+  assert.match(refundedStatus, /^(Ongoing|Standby|Complete) Refunded$/, 'a refunded order is still on the Order List, so it shows its Order List status and Refunded');
   const [xlsx] = await Promise.all([manager.waitForEvent('download'), manager.click('#exportXlsx')]);
   assert.match(xlsx.suggestedFilename(), /\.xlsx$/);
   assert.ok(fs.statSync(await xlsx.path()).size > 2000);
@@ -650,6 +1466,123 @@ await step('per-head fee: the admin switches Po-ur & Slice to per head and 3 hea
   const number = await adminPage.locator('.order-no-big').innerText();
   const saved = db.prepare('SELECT i.* FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.order_number = ?').get(number);
   assert.deepEqual([saved.heads, saved.service_fee_centavos, saved.line_total_centavos], [3, 13500, 41580]);
+});
+
+// ---- Revision 7: Delete Account -------------------------------------------------------------------------------------------
+await step('Users: Delete Account asks first, Cancel changes nothing, a double click deletes once, history is kept, and protected accounts have no button', async () => {
+  const config = loadConfig({ dbPath: ':memory:' });
+  const mk = (username, role = 'cashier') => createUser(db, { username, display_name: `${username} Person`, role, password: 'temp-pass-123' });
+  const spare = mk('spare.one'); const worker = mk('worker.two'); const ghost = mk('ghost.three'); const second = mk('admin.two', 'admin');
+  const cullId = db.prepare("SELECT id FROM products WHERE name = 'Cull Chicken'").get().id;
+  const placed = createOrder(db, worker, { submission_key: `del-hist-${Date.now()}-xxxxxxxx`, customer_number: 'HISTORY', items: [{ product_id: cullId, weight: '1', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null }], payment: { method: 'CASH' } }, { config, now: new Date() }).order;
+  const ordersBefore = db.prepare('SELECT COUNT(*) AS n FROM orders').get().n;
+  const paymentsBefore = db.prepare('SELECT COUNT(*) AS n FROM payments').get().n;
+  const eventsBefore = db.prepare('SELECT COUNT(*) AS n FROM order_events').get().n;
+  const exists = (id) => !!db.prepare('SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+
+  const deletes = [];
+  adminPage.on('request', (r) => { if (r.method() === 'DELETE') deletes.push(new URL(r.url()).pathname); });
+  await adminPage.click('a[href="#/users"]');
+  await adminPage.waitForSelector('#userList table');
+  const row = (username) => adminPage.locator('#userList tr', { has: adminPage.locator(`td:text-is("${username}")`) });
+
+  // who gets the button: everyone except you, the main owner account, and the last active admin
+  assert.equal(await row('owner').locator('[data-delete]').count(), 0, 'no button on your own account');
+  assert.match(await row('owner').innerText(), /This is you/);
+  for (const name of ['mgr', 'cash', 'spare.one', 'worker.two', 'admin.two']) {
+    assert.equal(await row(name).locator('[data-delete]').count(), 1, `${name} can be deleted`);
+    assert.equal((await row(name).locator('[data-delete]').innerText()).trim(), 'Delete Account');
+  }
+  await adminPage.screenshot({ path: '/tmp/shots/26-users.png' });
+
+  // the dialog: warning text, who it is about, Cancel and Delete Account; nothing is sent yet
+  await row('spare.one').locator('[data-delete]').click();
+  await adminPage.waitForSelector('dialog[open]');
+  const dlg = (await adminPage.locator('dialog').innerText()).replace(/\s+/g, ' ');
+  assert.match(dlg, /Delete this user account\?/);
+  assert.match(dlg, /Are you sure you want to delete this account\? This action may permanently remove the user's access and associated account data\. Please confirm that you want to continue\./);
+  assert.match(dlg, /spare\.one Person/); assert.match(dlg, /Username: spare\.one/); assert.match(dlg, /Cashier/);
+  assert.deepEqual(await adminPage.locator('dialog .dlg-foot button').allInnerTexts(), ['Cancel', 'Delete Account']);
+  await adminPage.screenshot({ path: '/tmp/shots/27-delete-dialog.png' });
+  assert.deepEqual(deletes, [], 'opening the dialog deletes nothing');
+  assert.equal(exists(spare.id), true);
+
+  // Cancel, and Esc, change nothing
+  await adminPage.click('dialog [data-dlg-action]:has-text("Cancel")');
+  await adminPage.waitForSelector('dialog[open]', { state: 'detached' });
+  assert.equal(exists(spare.id), true); assert.deepEqual(deletes, []);
+  assert.equal(await row('spare.one').count(), 1, 'still listed');
+  await row('spare.one').locator('[data-delete]').click();
+  await adminPage.waitForSelector('dialog[open]');
+  await adminPage.keyboard.press('Escape');
+  await adminPage.waitForSelector('dialog[open]', { state: 'detached' });
+  assert.equal(exists(spare.id), true); assert.deepEqual(deletes, []);
+
+  // Delete Account, double-clicked: one request, the account is gone, the list is refreshed, a message is shown
+  await row('spare.one').locator('[data-delete]').click();
+  await adminPage.waitForSelector('dialog[open]');
+  await adminPage.locator('dialog [data-dlg-action]:has-text("Delete Account")').dblclick();
+  await adminPage.waitForSelector('dialog[open]', { state: 'detached' });
+  await adminPage.waitForFunction(() => !document.querySelector('#userList')?.innerText.includes('spare.one'));
+  assert.equal(deletes.length, 1, 'a double click sends one request');
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE id = ?').get(spare.id), undefined, 'a never-used account is removed completely');
+  assert.match(await adminPage.locator('#toasts').innerText(), /spare\.one Person was deleted\./);
+
+  // an account with orders and payments: closed, not erased; every record stays
+  await row('worker.two').locator('[data-delete]').click();
+  await adminPage.waitForSelector('dialog[open]');
+  await adminPage.click('dialog [data-dlg-action]:has-text("Delete Account")');
+  await adminPage.waitForSelector('dialog[open]', { state: 'detached' });
+  await adminPage.waitForFunction(() => !document.querySelector('#userList')?.innerText.includes('worker.two'));
+  assert.match(await adminPage.locator('#toasts').innerText(), /worker\.two Person was deleted\. Their past orders and payment records were kept\./);
+  assert.equal(exists(worker.id), false, 'no longer an account');
+  assert.ok(db.prepare('SELECT deleted_at FROM users WHERE id = ?').get(worker.id).deleted_at, 'the row stays, marked deleted');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, ordersBefore);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM payments').get().n, paymentsBefore);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM order_events').get().n, eventsBefore);
+  const kept = await adminPage.evaluate(async (id) => (await (await fetch(`/api/orders/${id}`)).json()).order, placed.id);
+  assert.equal(kept.cashier_name, 'worker.two Person', 'the old order still names its cashier');
+  assert.equal(kept.payments.length, 1);
+  assert.equal(deletes.length, 2);
+
+  // an error is shown plainly and the list is brought up to date: the account was deleted somewhere else meanwhile
+  await row('ghost.three').locator('[data-delete]').click();
+  await adminPage.waitForSelector('dialog[open]');
+  db.prepare('DELETE FROM users WHERE id = ?').run(ghost.id);
+  await adminPage.click('dialog [data-dlg-action]:has-text("Delete Account")');
+  await adminPage.waitForSelector('dialog .error-box');
+  assert.match(await adminPage.locator('dialog .error-box').innerText(), /not found\. It may already have been deleted\./);
+  await adminPage.waitForFunction(() => !document.querySelector('#userList')?.innerText.includes('ghost.three'));
+  await adminPage.click('dialog [data-dlg-action]:has-text("Cancel")');
+  await adminPage.waitForSelector('dialog[open]', { state: 'detached' });
+
+  // another admin: the main owner account is protected for them, and they cannot delete themselves
+  db.prepare('UPDATE users SET active = 1 WHERE id = ?').run(second.id);
+  const adminTwo = await newPage();
+  await login(adminTwo, 'admin.two', 'temp-pass-123');
+  await adminTwo.click('a[href="#/users"]');
+  await adminTwo.waitForSelector('#userList table');
+  const row2 = (username) => adminTwo.locator('#userList tr', { has: adminTwo.locator(`td:text-is("${username}")`) });
+  assert.equal(await row2('owner').locator('[data-delete]').count(), 0, 'the main owner account cannot be deleted');
+  assert.match(await row2('owner').innerText(), /Main owner account/);
+  assert.equal(await row2('admin.two').locator('[data-delete]').count(), 0);
+  assert.match(await row2('admin.two').innerText(), /This is you/);
+  assert.equal(await row2('mgr').locator('[data-delete]').count(), 1);
+  await adminTwo.context().close();
+
+  // managers and cashiers never see Users, and a hand-made request is refused by the server
+  const cashierNow = await newPage();                                   // the earlier cashier page was signed out in an earlier check
+  await login(cashierNow, 'cash', 'cashier-pass-1');
+  assert.equal(await manager.locator('[href="#/users"]').count(), 0);
+  assert.equal(await cashierNow.locator('[href="#/users"]').count(), 0);
+  const victim = db.prepare("SELECT id FROM users WHERE username = 'mgr'").get().id;
+  for (const page of [cashierNow, manager]) {
+    const status = await page.evaluate(async (id) => (await fetch(`/api/users/${id}`, { method: 'DELETE', headers: { 'X-Requested-With': 'pos' } })).status, victim);
+    assert.equal(status, 403, 'a direct request from a non-admin is refused');
+  }
+  await cashierNow.context().close();
+  assert.equal(exists(victim), true);
+  adminPage.removeAllListeners('request');
 });
 
 await step('phone width: no sideways scrolling on the weight and service screen', async () => {

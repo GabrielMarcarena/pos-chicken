@@ -391,7 +391,7 @@ function renderDiscount() {
   const reasons = Object.entries(DISCOUNT_REASONS).map(([v, t]) => `<option value="${v}" ${d.reason === v ? 'selected' : ''}>${esc(t)}</option>`).join('');
   $('#discPanel').innerHTML = `
     <div class="panel-head"><h3>Discount <span class="muted">(optional)</span></h3></div>
-    <p class="muted">For example a senior citizen discount. It comes off the whole order, and the reason is saved on the order.</p>
+    <p class="muted">For example a senior citizen, bulk order, employee or VIP discount. It comes off the whole order, and the reason is saved on the order.</p>
     <div class="discount-fields">
       <div class="field"><label for="discType">Discount</label><select id="discType">${types}</select></div>
       ${on ? `<div class="field"><label for="discValue">${d.type === 'FIXED' ? 'Amount (₱)' : 'Percent (%)'}</label><input id="discValue" type="text" inputmode="decimal" value="${esc(d.value)}" placeholder="${d.type === 'FIXED' ? 'for example 50' : 'for example 20'}" autocomplete="off"></div>
@@ -428,7 +428,7 @@ function renderPayment() {
   const methods = [['NONE', 'Not recorded'], ...Object.entries(PAYMENT_METHODS)]
     .map(([v, t]) => `<option value="${v}" ${p.method === v ? 'selected' : ''}>${esc(t)}</option>`).join('');
   $('#payPanel').innerHTML = `
-    <div class="panel-head"><h3>Payment details <span class="muted">(optional)</span></h3></div>
+    <div class="panel-head"><h3>Payment details <span class="muted">(required)</span></h3></div>
     <p class="muted">This only records what you type for billing. It does not charge anyone and does not replace the official receipt.</p>
     <div class="form-grid mt-s">
       <div class="field"><label for="payMethod">How did the customer pay?</label><select id="payMethod">${methods}</select></div>
