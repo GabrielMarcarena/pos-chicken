@@ -40,6 +40,18 @@ export function parseQuantityToMilli(input) {
   return q !== null && q > 0 && q <= 1_000_000 ? q : null;
 }
 
+/**
+ * A stock count for the Daily Inventory: zero or more, up to 1,000,000. Chicken and fixed-price items are whole numbers
+ * (whole: true); items sold by weight may have up to 3 decimals. Returns thousandths, or null when it is not valid.
+ */
+export const MAX_STOCK_MILLI = 1_000_000_000;
+export function parseCountToMilli(input, { whole = true } = {}) {
+  const q = parseScaled(input, 3);
+  if (q === null || q > MAX_STOCK_MILLI) return null;
+  if (whole && q % 1000 !== 0) return null;
+  return q;
+}
+
 /** Number of heads (chickens) on one line: a whole number from 1 to 999. Returns null when it is not valid. */
 export const MAX_HEADS = 999;
 export function parseHeads(input) {

@@ -3,10 +3,10 @@
 // Who may do what:
 //   manager: add/edit/deactivate products and other products (including other-product prices)
 //   admin:   everything a manager can, plus chicken prices per kg and service fees
-import { tx } from '../db.js';
+import { tx, addStandardOptions, categoryFromName } from '../db.js';
 import { HttpError } from '../http.js';
 import { parsePesosToCentavos } from '../../shared/money.js';
-import { SERVICE_CODES, FEE_BASIS, SOLD_BY } from '../../shared/constants.js';
+import { SERVICE_CODES, FEE_BASIS, PRODUCT_KINDS, UNITS, unitRank, CHICKEN_CATEGORIES } from '../../shared/constants.js';
 import { ROLE_RANK } from './users.js';
 
 const MAX_PRICE = 10_000_000; // ₱100,000 per kg or unit keeps every calculation exact
@@ -14,10 +14,23 @@ const MAX_PRICE = 10_000_000; // ₱100,000 per kg or unit keeps every calculati
 export const productCode = (id) => `CH-${String(id).padStart(3, '0')}`;
 export const otherCode = (id) => `OP-${String(id).padStart(3, '0')}`;
 
-const shapeProduct = (p) => ({
+/** When each product's picture was last changed (null = no picture), so the screens can show it and refresh it when it changes. */
+const imageVersions = (db, kind) => new Map(db.prepare('SELECT item_id, updated_at FROM product_images WHERE kind = ?').all(kind).map((r) => [r.item_id, r.updated_at]));
+
+const shapeProduct = (p, images = new Map()) => ({
   id: p.id, code: productCode(p.id), name: p.name, description: p.description,
   price_per_kg_centavos: p.price_per_kg_centavos, active: !!p.active, updated_at: p.updated_at,
+  category: p.category ?? 'OTHER', category_label: CHICKEN_CATEGORIES[p.category] ?? CHICKEN_CATEGORIES.OTHER,
+  image_version: images.get(p.id) ?? null,
 });
+const oneProduct = (db, id) => shapeProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(id), imageVersions(db, 'CHICKEN'));
+
+/** The paper-form block chosen on the Products screen; when none is given, the one the name points to. */
+function readCategory(input, name) {
+  if (input === undefined || input === null || input === '') return categoryFromName(name);
+  if (!CHICKEN_CATEGORIES[input]) throw new HttpError(400, 'Choose the report category: B-Cull, Cull, Broiler or Other chicken.', 'VALIDATION');
+  return input;
+}
 const isAdmin = (user) => ROLE_RANK[user.role] >= ROLE_RANK.admin;
 const clean = (value, max) => String(value ?? '').trim().slice(0, max);
 
@@ -37,7 +50,8 @@ function logPrice(db, { kind, subject, name, oldValue, newValue, oldBasis = null
 
 export function listProducts(db, { includeInactive = false } = {}) {
   const where = includeInactive ? '' : 'WHERE active = 1';
-  return db.prepare(`SELECT * FROM products ${where} ORDER BY active DESC, name COLLATE NOCASE`).all().map(shapeProduct);
+  const images = imageVersions(db, 'CHICKEN');
+  return db.prepare(`SELECT * FROM products ${where} ORDER BY active DESC, name COLLATE NOCASE`).all().map((p) => shapeProduct(p, images));
 }
 
 export function createProduct(db, user, body, now = new Date()) {
@@ -52,12 +66,13 @@ export function createProduct(db, user, body, now = new Date()) {
   }
   // Without a price the product waits, inactive, until the admin sets one.
   const active = price > 0 && body.active !== false ? 1 : 0;
+  const category = readCategory(body.category, name);
   return tx(db, () => duplicateGuard(() => {
-    const r = db.prepare('INSERT INTO products (name, description, price_per_kg_centavos, active, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-      .run(name, clean(body.description, 200), price, active, now.toISOString(), now.toISOString());
+    const r = db.prepare('INSERT INTO products (name, description, price_per_kg_centavos, active, created_at, updated_at, category) VALUES (?,?,?,?,?,?,?)')
+      .run(name, clean(body.description, 200), price, active, now.toISOString(), now.toISOString(), category);
     const id = Number(r.lastInsertRowid);
     if (price > 0) logPrice(db, { kind: 'CHICKEN_PRICE', subject: productCode(id), name, oldValue: null, newValue: price, userId: user.id, now });
-    return shapeProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
+    return oneProduct(db, id);
   }, 'product'));
 }
 
@@ -65,9 +80,10 @@ export function updateProduct(db, user, id, body, now = new Date()) {
   return tx(db, () => duplicateGuard(() => {
     const p = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     if (!p) throw new HttpError(404, 'Product not found.', 'NOT_FOUND');
-    const next = { name: p.name, description: p.description, price: p.price_per_kg_centavos, active: p.active };
+    const next = { name: p.name, description: p.description, price: p.price_per_kg_centavos, active: p.active, category: p.category ?? 'OTHER' };
     if (body.name !== undefined) next.name = clean(body.name, 80) || p.name;
     if (body.description !== undefined) next.description = clean(body.description, 200);
+    if (body.category !== undefined) next.category = readCategory(body.category, next.name);
     if (body.price !== undefined && body.price !== '') {
       const price = parsePesosToCentavos(body.price, MAX_PRICE);
       if (price === null || price <= 0) throw new HttpError(400, 'Enter a price per kg above ₱0.00.', 'VALIDATION');
@@ -79,31 +95,37 @@ export function updateProduct(db, user, id, body, now = new Date()) {
     if (body.active !== undefined) next.active = body.active ? 1 : 0;
     if (next.active && next.price <= 0) throw new HttpError(400, 'Set a price per kg before activating this product. Ask the admin.', 'NO_PRICE');
 
-    db.prepare('UPDATE products SET name=?, description=?, price_per_kg_centavos=?, active=?, updated_at=? WHERE id=?')
-      .run(next.name, next.description, next.price, next.active, now.toISOString(), id);
+    db.prepare('UPDATE products SET name=?, description=?, price_per_kg_centavos=?, active=?, category=?, updated_at=? WHERE id=?')
+      .run(next.name, next.description, next.price, next.active, next.category, now.toISOString(), id);
     if (next.price !== p.price_per_kg_centavos) {
       logPrice(db, { kind: 'CHICKEN_PRICE', subject: productCode(id), name: next.name, oldValue: p.price_per_kg_centavos, newValue: next.price, userId: user.id, now });
     }
-    return shapeProduct(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
+    return oneProduct(db, id);
   }, 'product'));
 }
 
 // ---- Other products -----------------------------------------------------------------------------
-// A product (Eggs (Small), Garlic ...) can be sold in several ways. Each way is an "option":
-//   FIXED  - a fixed price per piece, dozen, pack or batch (whole quantities)
-//   PER_KG - a price per kg (weight with up to 3 decimals)
-// Managers add products and options. Only the admin sets prices. An option without a price stays inactive.
+// A product (Eggs (Small), Garlic ...) is sold in a fixed set of ways. Each way is an "option" with its own price:
+//   Eggs            piece, carton, tray              (fixed price each, whole quantities)
+//   Other products  piece, pack, sack (fixed price each) and kg (a price per kg, weight with up to 3 decimals)
+// Every new product gets all of its options straight away, so its Daily Inventory rows exist from the first day. An option without a
+// price stays inactive (hidden from the cashier) until the admin sets one. Managers add products; only the admin sets prices.
+// Products made before revision 10 keep any other option they already had (dozen, batch ...) and gain the standard ones.
 
+const soldByUnit = (unit) => (unit === 'kg' ? 'PER_KG' : 'FIXED');
 const shapeOption = (o) => ({ id: o.id, unit: o.unit, sold_by: o.sold_by, price_centavos: o.price_centavos, active: !!o.active });
-const shapeOther = (p, options) => ({
-  id: p.id, code: otherCode(p.id), name: p.name, active: !!p.active, updated_at: p.updated_at, options: options.map(shapeOption),
+const shapeOther = (p, options, images = new Map()) => ({
+  id: p.id, code: otherCode(p.id), name: p.name, kind: p.kind, kind_label: PRODUCT_KINDS[p.kind], active: !!p.active, updated_at: p.updated_at,
+  units: UNITS[p.kind], options: options.slice().sort((a, b) => unitRank(a.unit) - unitRank(b.unit) || a.id - b.id).map(shapeOption),
+  image_version: images.get(p.id) ?? null,
 });
 
 /** For the cashier screen (default): active products that have at least one active, priced option. */
 export function listOtherProducts(db, { includeInactive = false } = {}) {
   const products = db.prepare(`SELECT * FROM other_products ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY active DESC, name COLLATE NOCASE`).all();
   const options = db.prepare('SELECT * FROM other_product_options ORDER BY id').all();
-  const shaped = products.map((p) => shapeOther(p, options.filter((o) => o.product_id === p.id && (includeInactive || o.active))));
+  const images = imageVersions(db, 'OTHER');
+  const shaped = products.map((p) => shapeOther(p, options.filter((o) => o.product_id === p.id && (includeInactive || o.active)), images));
   return includeInactive ? shaped : shaped.filter((p) => p.options.length > 0);
 }
 
@@ -115,33 +137,31 @@ function readPrice(user, input, current) {
   return price;
 }
 
-function insertOption(db, user, productId, body, now) {
-  const product = db.prepare('SELECT * FROM other_products WHERE id = ?').get(productId);
-  if (!product) throw new HttpError(404, 'Product not found.', 'NOT_FOUND');
-  if (!SOLD_BY[body.sold_by]) throw new HttpError(400, 'Choose fixed price or per kg.', 'VALIDATION');
-  const unit = body.sold_by === 'PER_KG' ? 'kg' : clean(body.unit, 20).toLowerCase();
-  if (!unit) throw new HttpError(400, 'Enter a unit such as piece, dozen, pack or batch.', 'VALIDATION');
-  const price = readPrice(user, body.price, 0);
-  const active = price > 0 && body.active !== false ? 1 : 0; // without a price it waits for the admin
-  try {
-    const r = db.prepare('INSERT INTO other_product_options (product_id, unit, sold_by, price_centavos, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-      .run(productId, unit, body.sold_by, price, active, now.toISOString(), now.toISOString());
-    const id = Number(r.lastInsertRowid);
-    if (price > 0) logPrice(db, { kind: 'OTHER_PRICE', subject: `${otherCode(productId)}/${unit}`, name: `${product.name} (${unit})`, oldValue: null, newValue: price, userId: user.id, now });
-    return id;
-  } catch (err) {
-    if (String(err.message).includes('UNIQUE')) throw new HttpError(409, `${product.name} already has a "${unit}" option.`, 'DUPLICATE');
-    throw err;
-  }
+function setOptionPrice(db, user, product, option, input, now) {
+  const price = readPrice(user, input, option.price_centavos);
+  if (price === option.price_centavos) return;
+  // A first price makes the option usable; changing a price leaves it as it was.
+  const active = option.price_centavos === 0 ? 1 : option.active;
+  db.prepare('UPDATE other_product_options SET price_centavos = ?, active = ?, updated_at = ? WHERE id = ?').run(price, active, now.toISOString(), option.id);
+  logPrice(db, { kind: 'OTHER_PRICE', subject: `${otherCode(product.id)}/${option.unit}`, name: `${product.name} (${option.unit})`, oldValue: option.price_centavos || null, newValue: price, userId: user.id, now });
 }
 
 export function createOtherProduct(db, user, body, now = new Date()) {
   const name = clean(body.name, 80);
   if (!name) throw new HttpError(400, 'Enter a product name.', 'VALIDATION');
+  const kind = body.kind === undefined || body.kind === '' ? 'OTHER' : body.kind;
+  if (!PRODUCT_KINDS[kind]) throw new HttpError(400, 'Choose Eggs or Other product.', 'VALIDATION');
+  const prices = body.prices && typeof body.prices === 'object' ? body.prices : {};
+  for (const unit of Object.keys(prices)) {
+    if (!UNITS[kind].includes(unit)) throw new HttpError(400, `${PRODUCT_KINDS[kind]} are sold by ${UNITS[kind].join(', ')}, not "${unit}".`, 'VALIDATION');
+  }
   return tx(db, () => duplicateGuard(() => {
-    const r = db.prepare('INSERT INTO other_products (name, active, created_at, updated_at) VALUES (?,1,?,?)').run(name, now.toISOString(), now.toISOString());
-    const id = Number(r.lastInsertRowid);
-    for (const option of Array.isArray(body.options) ? body.options : []) insertOption(db, user, id, option, now);
+    const id = Number(db.prepare('INSERT INTO other_products (name, kind, active, created_at, updated_at) VALUES (?,?,1,?,?)').run(name, kind, now.toISOString(), now.toISOString()).lastInsertRowid);
+    addStandardOptions(db, id, kind, now.toISOString());
+    const product = db.prepare('SELECT * FROM other_products WHERE id = ?').get(id);
+    for (const option of db.prepare('SELECT * FROM other_product_options WHERE product_id = ?').all(id)) {
+      setOptionPrice(db, user, product, option, prices[option.unit], now);
+    }
     return listOtherProducts(db, { includeInactive: true }).find((p) => p.id === id);
   }, 'product'));
 }
@@ -157,67 +177,146 @@ export function updateOtherProduct(db, user, id, body, now = new Date()) {
   }, 'product'));
 }
 
+/** Add a way of selling that the product is missing. The unit must be one of the product's standard units. */
 export function createOption(db, user, productId, body, now = new Date()) {
   return tx(db, () => {
-    insertOption(db, user, productId, body, now);
+    const product = db.prepare('SELECT * FROM other_products WHERE id = ?').get(productId);
+    if (!product) throw new HttpError(404, 'Product not found.', 'NOT_FOUND');
+    const unit = clean(body.unit, 20).toLowerCase();
+    if (!UNITS[product.kind].includes(unit)) {
+      throw new HttpError(400, `${product.name} (${PRODUCT_KINDS[product.kind].toLowerCase()}) is sold by ${UNITS[product.kind].join(', ')}.`, 'VALIDATION');
+    }
+    if (db.prepare('SELECT 1 FROM other_product_options WHERE product_id = ? AND unit = ?').get(productId, unit)) {
+      throw new HttpError(409, `${product.name} already has a "${unit}" option.`, 'DUPLICATE');
+    }
+    const nowIso = now.toISOString();
+    const id = Number(db.prepare('INSERT INTO other_product_options (product_id, unit, sold_by, price_centavos, active, created_at, updated_at) VALUES (?,?,?,0,0,?,?)')
+      .run(productId, unit, soldByUnit(unit), nowIso, nowIso).lastInsertRowid);
+    setOptionPrice(db, user, product, db.prepare('SELECT * FROM other_product_options WHERE id = ?').get(id), body.price, now);
     return listOtherProducts(db, { includeInactive: true }).find((x) => x.id === productId);
   });
 }
 
+/** Change an option's price (admin) or switch it on or off. Its unit never changes: it is what the stock and the saved orders are counted in. */
 export function updateOption(db, user, optionId, body, now = new Date()) {
   return tx(db, () => {
     const o = db.prepare('SELECT o.*, p.name AS product_name FROM other_product_options o JOIN other_products p ON p.id = o.product_id WHERE o.id = ?').get(optionId);
     if (!o) throw new HttpError(404, 'Option not found.', 'NOT_FOUND');
-    const soldBy = body.sold_by !== undefined ? body.sold_by : o.sold_by;
-    if (!SOLD_BY[soldBy]) throw new HttpError(400, 'Choose fixed price or per kg.', 'VALIDATION');
-    const unit = soldBy === 'PER_KG' ? 'kg' : clean(body.unit ?? o.unit, 20).toLowerCase() || o.unit;
-    const price = readPrice(user, body.price, o.price_centavos);
-    const active = body.active !== undefined ? (body.active ? 1 : 0) : o.active;
-    if (active && price <= 0) throw new HttpError(400, 'Set a price before activating this option. Ask the admin.', 'NO_PRICE');
-    try {
-      db.prepare('UPDATE other_product_options SET unit = ?, sold_by = ?, price_centavos = ?, active = ?, updated_at = ? WHERE id = ?')
-        .run(unit, soldBy, price, active, now.toISOString(), optionId);
-    } catch (err) {
-      if (String(err.message).includes('UNIQUE')) throw new HttpError(409, `${o.product_name} already has a "${unit}" option.`, 'DUPLICATE');
-      throw err;
+    if ((body.unit !== undefined && clean(body.unit, 20).toLowerCase() !== o.unit) || (body.sold_by !== undefined && body.sold_by !== o.sold_by)) {
+      throw new HttpError(400, 'The unit of a selling option cannot be changed. Switch this one off and use the right unit instead.', 'VALIDATION');
     }
+    const price = readPrice(user, body.price, o.price_centavos);
+    // A first price switches the option on, unless the person said otherwise.
+    const active = body.active !== undefined ? (body.active ? 1 : 0) : (o.price_centavos === 0 && price > 0 ? 1 : o.active);
+    if (active && price <= 0) throw new HttpError(400, 'Set a price before activating this option. Ask the admin.', 'NO_PRICE');
+    db.prepare('UPDATE other_product_options SET price_centavos = ?, active = ?, updated_at = ? WHERE id = ?').run(price, active, now.toISOString(), optionId);
     if (price !== o.price_centavos) {
-      logPrice(db, { kind: 'OTHER_PRICE', subject: `${otherCode(o.product_id)}/${unit}`, name: `${o.product_name} (${unit})`, oldValue: o.price_centavos, newValue: price, userId: user.id, now });
+      logPrice(db, { kind: 'OTHER_PRICE', subject: `${otherCode(o.product_id)}/${o.unit}`, name: `${o.product_name} (${o.unit})`, oldValue: o.price_centavos, newValue: price, userId: user.id, now });
     }
     return listOtherProducts(db, { includeInactive: true }).find((x) => x.id === o.product_id);
   });
 }
 
 /**
- * First-run starter data for a real install: the service prices the shop gave (Po-ur & Slice 45, Dressed & Slice 25,
- * Live no fee) and the other products the shop named. Their prices are NOT known, so they start without a price
- * and stay hidden from cashiers until the admin sets them. Does nothing if the shop already has other products.
+ * First-run starter data for a real install: the service prices the shop gave (Pour 45, Dress 25, Live no fee) and the other
+ * products the shop named. Their prices are NOT known, so they start without a price and stay hidden from cashiers until the
+ * admin sets them. Does nothing if the shop already has other products.
  */
 export function seedStarterCatalog(db, now = new Date()) {
   if (db.prepare('SELECT COUNT(*) AS n FROM other_products').get().n > 0) return false;
   db.prepare("UPDATE service_fees SET amount_centavos = 4500, updated_at = ? WHERE code = 'POUR' AND amount_centavos = 0").run(now.toISOString());
   db.prepare("UPDATE service_fees SET amount_centavos = 2500, updated_at = ? WHERE code = 'NOT_POUR' AND amount_centavos = 0").run(now.toISOString());
-  const eggs = ['piece', 'dozen', 'batch'].map((unit) => ({ unit, sold_by: 'FIXED' }));
-  const perKg = [{ unit: 'kg', sold_by: 'PER_KG' }];
   const starter = [
-    ['Eggs (Small)', eggs], ['Eggs (Medium)', eggs], ['Eggs (Large)', eggs],
-    ['Etag (Sun-Dried)', perKg], ['Etag (Smoked)', perKg], ['Garlic', perKg], ['Onions', perKg], ['Laya', perKg],
+    ['Eggs (Small)', 'EGGS'], ['Eggs (Medium)', 'EGGS'], ['Eggs (Large)', 'EGGS'],
+    ['Etag (Sun-Dried)', 'OTHER'], ['Etag (Smoked)', 'OTHER'], ['Garlic', 'OTHER'], ['Onions', 'OTHER'], ['Laya', 'OTHER'],
   ];
-  const system = { id: db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()?.id ?? 0, role: 'admin' };
   tx(db, () => {
-    for (const [name, options] of starter) {
-      const id = Number(db.prepare('INSERT INTO other_products (name, active, created_at, updated_at) VALUES (?,1,?,?)').run(name, now.toISOString(), now.toISOString()).lastInsertRowid);
-      for (const o of options) insertOption(db, system, id, o, now);
+    for (const [name, kind] of starter) {
+      const id = Number(db.prepare('INSERT INTO other_products (name, kind, active, created_at, updated_at) VALUES (?,?,1,?,?)').run(name, kind, now.toISOString(), now.toISOString()).lastInsertRowid);
+      addStandardOptions(db, id, kind, now.toISOString());
     }
   });
   return true;
 }
 
+/**
+ * Revision 11 products, added once: Brown Cull Chicken (a chicken product in the CULL block of the report), Ducks and Catfish (other
+ * products). No price is invented: they wait without a price (hidden from the cashier) until the admin sets one in Products. A product
+ * that already exists by that name is left exactly as it is. Runs once per database (it is not repeated if a product is renamed later).
+ */
+export function seedRevision11Products(db, now = new Date()) {
+  if (db.prepare("SELECT 1 FROM app_meta WHERE key = 'r11_products'").get()) return [];
+  const added = [];
+  const iso = now.toISOString();
+  tx(db, () => {
+    if (!db.prepare('SELECT 1 FROM products WHERE name = ?').get('Brown Cull Chicken')) {
+      db.prepare("INSERT INTO products (name, description, price_per_kg_centavos, active, created_at, updated_at, category) VALUES (?, '', 0, 0, ?, ?, 'CULL')")
+        .run('Brown Cull Chicken', iso, iso);
+      added.push('Brown Cull Chicken');
+    }
+    for (const name of ['Ducks', 'Catfish']) {
+      if (db.prepare('SELECT 1 FROM other_products WHERE name = ?').get(name)) continue;
+      const id = Number(db.prepare("INSERT INTO other_products (name, kind, active, created_at, updated_at) VALUES (?, 'OTHER', 1, ?, ?)").run(name, iso, iso).lastInsertRowid);
+      addStandardOptions(db, id, 'OTHER', iso);
+      added.push(name);
+    }
+    db.prepare("INSERT INTO app_meta (key, value) VALUES ('r11_products', ?)").run(iso);
+  });
+  return added;
+}
+
+// ---- Product pictures (Revision 11) -----------------------------------------------------------------
+// One picture per product, shown on the New order cards. The screen shrinks a photo before sending it; the server checks it really is a
+// JPEG, PNG or WebP picture and keeps it in the database (so a backup copies it). No picture: the card shows an icon instead.
+
+const MAX_IMAGE_BYTES = 400_000;
+const IMAGE_KINDS = { chicken: 'CHICKEN', other: 'OTHER' };
+const looksLike = {
+  'image/jpeg': (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png': (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/webp': (b) => b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP',
+};
+
+function imageTarget(db, kindParam, id) {
+  const kind = IMAGE_KINDS[kindParam];
+  if (!kind) throw new HttpError(404, 'Not found.', 'NOT_FOUND');
+  const found = db.prepare(`SELECT id, name FROM ${kind === 'CHICKEN' ? 'products' : 'other_products'} WHERE id = ?`).get(id);
+  if (!found) throw new HttpError(404, 'Product not found.', 'NOT_FOUND');
+  return { kind, product: found };
+}
+
+/** body.data_url: "data:image/jpeg;base64,...". Managers and the admin (the people who edit products). */
+export function setProductImage(db, user, kindParam, id, body, now = new Date()) {
+  const { kind, product } = imageTarget(db, kindParam, id);
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(body?.data_url ?? ''));
+  if (!m) throw new HttpError(400, 'Choose a JPEG, PNG or WebP picture.', 'VALIDATION');
+  const data = Buffer.from(m[2], 'base64');
+  if (!looksLike[m[1]](data)) throw new HttpError(400, 'That file is not a picture the app can show. Choose a JPEG, PNG or WebP photo.', 'VALIDATION');
+  if (data.length > MAX_IMAGE_BYTES) throw new HttpError(400, `The picture is too large (${Math.ceil(data.length / 1000)} KB). Use one under ${MAX_IMAGE_BYTES / 1000} KB.`, 'TOO_LARGE');
+  db.prepare(`INSERT INTO product_images (kind, item_id, mime, data, updated_at) VALUES (?,?,?,?,?)
+              ON CONFLICT(kind, item_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, updated_at = excluded.updated_at`).run(kind, id, m[1], data, now.toISOString());
+  return { name: product.name, image_version: now.toISOString() };
+}
+
+export function removeProductImage(db, user, kindParam, id) {
+  const { kind, product } = imageTarget(db, kindParam, id);
+  db.prepare('DELETE FROM product_images WHERE kind = ? AND item_id = ?').run(kind, id);
+  return { name: product.name, image_version: null };
+}
+
+export function getProductImage(db, kindParam, id) {
+  const { kind } = imageTarget(db, kindParam, id);
+  const img = db.prepare('SELECT mime, data FROM product_images WHERE kind = ? AND item_id = ?').get(kind, id);
+  if (!img) throw new HttpError(404, 'This product has no picture.', 'NOT_FOUND');
+  return { mime: img.mime, body: Buffer.from(img.data) };
+}
+
 // ---- Service fees (admin only) ----------------------------------------------------------------
 
+/** The fees that are charged: Pour and Dress. (Old With Blood / Dukot rows may still sit in the table; they are no longer charged or shown.) */
 export function getFeeConfig(db) {
   const fees = {};
-  for (const f of db.prepare('SELECT * FROM service_fees').all()) fees[f.code] = { amount: f.amount_centavos, basis: f.basis };
+  for (const f of db.prepare('SELECT * FROM service_fees').all()) if (SERVICE_CODES.includes(f.code)) fees[f.code] = { amount: f.amount_centavos, basis: f.basis };
   return fees;
 }
 

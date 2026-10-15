@@ -1,38 +1,36 @@
-// Daily Sales Report: the shop's paper form, filled in with what the app knows.
+// Daily Sales Report ("Download Daily Report"): the shop's paper form, filled in with what the app knows.
 //
 // Filled in automatically: date, time span, cashier, the sales ledger for each chicken type (heads, customer, kilos,
-// price, service, amount) with totals, heads sold, eggs and other products sold, and the sales totals.
-// Left blank on purpose, because the cashier counts them by hand: chicken balance / additional / left, egg beginning
-// and left, expenses, other collections, the cash breakdown and excess/loss.
+// price, service, amount) with totals, heads sold, eggs and other products sold, the list of discounts and the sales totals.
+// Revision 12 also fills in: the Katay / Dead chicken sold from the ref (a block of its own), the EXPENSES typed in New order > Advanced,
+// and the CASH BREAKDOWN counted there (every bill and coin), with the expected cash and the EXCESS/LOSS.
+// Left blank on purpose, because the cashier counts them by hand: chicken balance / additional / left, egg beginning and left.
 //
 // Only orders that were really sold are listed (Completed, Refunded). Canceled and replaced orders are not.
-import { COUNTS_AS_SALE } from '../../shared/constants.js';
+// Revision 11: the report date is the BUSINESS DAY the orders were sold on (the same day the Daily Inventory counts them on), and a
+// chicken product goes into the block chosen as its category on the Products screen (B-Cull, Cull, Broiler, or a block of its own).
+import { COUNTS_AS_SALE, CASH_DENOMINATIONS, discountReasonLabel, eggSizeOf, EGG_SIZES } from '../../shared/constants.js';
+import { expensesOf, latestCashCount, cashSales } from './cashbook.js';
 import { toPhtDateTime } from '../time.js';
 import { Sheet, buildWorkbook, style, colName } from '../xlsx.js';
 
 // ---- Which block of the form does a product belong to? ----------------------------------------------
 
-/** B-CULL, CULL and BROILER are the form's three blocks. Any other chicken product gets a block of its own. */
-export function blockFor(productName) {
+const BLOCKS = { BCULL: 'B-CULL', CULL: 'CULL', BROILER: 'BROILER', REF: 'KATAY / DEAD (REF)' };
+
+/**
+ * B-CULL, CULL and BROILER are the form's three blocks, chosen by the product's category. Any other chicken product gets a block of its own.
+ * Revision 12: Katay and Dead chicken sold from the ref (category REF) share one block, KATAY / DEAD (REF).
+ */
+export function blockFor(category, productName) {
+  if (BLOCKS[category]) return { key: category, title: BLOCKS[category] };
   const name = String(productName);
-  if (/b[\s-]?cull|breeder/i.test(name)) return { key: 'BCULL', title: 'B-CULL' };
-  if (/cull/i.test(name)) return { key: 'CULL', title: 'CULL' };
-  if (/broiler/i.test(name)) return { key: 'BROILER', title: 'BROILER' };
   return { key: `OTHER:${name.toLowerCase()}`, title: name.toUpperCase() };
 }
 
-export const EGG_SIZES = ['Asst.', 'Sm.', 'Med.', 'Lar.', 'XL'];
-
-/** The egg size row for an other product, or null when the product is not eggs. */
-export function eggSize(productName) {
-  const name = String(productName);
-  if (!/egg/i.test(name)) return null;
-  if (/\bxl\b|extra[\s-]*large/i.test(name)) return 'XL';
-  if (/small|\bsm\b/i.test(name)) return 'Sm.';
-  if (/medium|\bmed\b/i.test(name)) return 'Med.';
-  if (/large|\blar\b/i.test(name)) return 'Lar.';
-  return 'Asst.';
-}
+/** The egg size row for an other product, or null when the product is not eggs (shared with the Products screen, which shows it). */
+export const eggSize = eggSizeOf;
+export { EGG_SIZES };
 
 // ---- Gathering -------------------------------------------------------------------------------------
 
@@ -45,36 +43,54 @@ const qtyText = (milli) => (milli % 1000 === 0 ? String(milli / 1000) : String(N
 export function gatherDaily(db, { date, cashierId = null }) {
   const marks = COUNTS_AS_SALE.map(() => '?').join(',');
   const orders = db.prepare(`
-    SELECT o.id, o.order_number, o.submitted_at, o.customer_number, o.status, o.discount_centavos, o.refund_centavos, u.display_name AS cashier_name
-    FROM orders o JOIN users u ON u.id = o.cashier_id
-    WHERE o.business_date = ? AND o.status IN (${marks}) ${cashierId ? 'AND o.cashier_id = ?' : ''}
+    SELECT o.id, o.order_number, o.submitted_at, o.customer_number, o.status, o.discount_centavos, o.discount_reason, o.discount_note,
+           o.refund_centavos, u.display_name AS cashier_name
+    FROM orders o JOIN users u ON u.id = o.cashier_id LEFT JOIN business_days d ON d.id = o.business_day_id
+    WHERE COALESCE(d.business_date, o.business_date) = ? AND o.status IN (${marks}) ${cashierId ? 'AND o.cashier_id = ?' : ''}
     ORDER BY o.id`).all(date, ...COUNTS_AS_SALE, ...(cashierId ? [cashierId] : []));
 
   const chicken = [];
   const other = [];
+  const discounts = [];
   for (const o of orders) {
     const base = {
       order: o.order_number, time: toPhtDateTime(o.submitted_at).slice(11), cashier: o.cashier_name,
       customer: o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number, refunded: o.refund_centavos > 0,
     };
-    for (const i of db.prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY line_no').all(o.id)) {
+    for (const i of db.prepare('SELECT i.*, p.category FROM order_items i LEFT JOIN products p ON p.id = i.product_id WHERE i.order_id = ? ORDER BY i.line_no').all(o.id)) {
       chicken.push({
-        ...base, product: i.product_name, heads: i.heads, kilos: i.weight_g / 1000, price: i.price_per_kg_centavos,
+        ...base, product: i.product_name, category: i.category ?? 'OTHER', heads: i.heads, kilos: i.weight_g / 1000, price: i.price_per_kg_centavos,
         service: i.service_fee_centavos, weightAmount: i.weight_amount_centavos, amount: i.line_total_centavos,
       });
     }
-    for (const i of db.prepare('SELECT * FROM order_other_items WHERE order_id = ? ORDER BY line_no').all(o.id)) {
-      other.push({ ...base, product: i.product_name, unit: i.unit, qtyMilli: i.quantity_milli, price: i.unit_price_centavos, amount: i.line_total_centavos });
+    for (const i of db.prepare('SELECT x.*, p.kind AS product_kind FROM order_other_items x LEFT JOIN other_products p ON p.id = x.other_product_id WHERE x.order_id = ? ORDER BY x.line_no').all(o.id)) {
+      other.push({ ...base, product: i.product_name, unit: i.unit, qtyMilli: i.quantity_milli, pieces: i.pieces ?? null, price: i.unit_price_centavos, amount: i.line_total_centavos, kind: i.product_kind ?? 'OTHER' });
+    }
+    // Revision 12: Katay / Dead chicken from the ref. No service fee; the price per kg is the one the cashier typed.
+    for (const i of db.prepare('SELECT * FROM order_ref_items WHERE order_id = ? ORDER BY line_no').all(o.id)) {
+      chicken.push({
+        ...base, product: i.product_name, category: 'REF', heads: i.heads, kilos: i.weight_g / 1000, price: i.price_per_kg_centavos,
+        service: 0, weightAmount: i.line_total_centavos, amount: i.line_total_centavos,
+      });
+    }
+    if (o.discount_centavos > 0) {
+      discounts.push({ ...base, reason: `${discountReasonLabel(o.discount_reason)}${o.discount_note ? `: ${o.discount_note}` : ''}`, amount: o.discount_centavos });
     }
   }
   const times = orders.map((o) => toPhtDateTime(o.submitted_at).slice(11));
   const names = [...new Set(orders.map((o) => o.cashier_name))];
   let cashierLabel = names.length ? names.join(', ') : 'All cashiers';
   if (cashierId) cashierLabel = db.prepare('SELECT display_name FROM users WHERE id = ?').get(cashierId)?.display_name ?? cashierLabel;
+  // Revision 12: the expenses and the cash count of the business day (only what this cashier typed, on a report for one cashier).
+  const day = db.prepare('SELECT id FROM business_days WHERE business_date = ?').get(date);
+  const expenses = day ? expensesOf(db, day.id, { cashierId, includeRemoved: false }).map((e) => ({ item: e.item, amount: e.amount_centavos })) : [];
+  const cashCount = day ? latestCashCount(db, day.id, cashierId) : null;
+  const money = day ? cashSales(db, day.id, cashierId) : { cash: 0, non_cash: 0 };
   return {
     date, cashierLabel, orderCount: orders.length,
+    expenses, expensesTotal: expenses.reduce((sum, e) => sum + e.amount, 0), cashCount, nonCash: money.non_cash,
     timeLabel: times.length ? `${fmt12(times[0])} - ${fmt12(times[times.length - 1])}` : '',
-    chicken, other,
+    chicken, other, discounts,
     discount: orders.reduce((s, o) => s + o.discount_centavos, 0),
     refunds: orders.reduce((s, o) => s + o.refund_centavos, 0),
   };
@@ -85,7 +101,7 @@ export function buildModel(data) {
   const blocks = [{ key: 'BCULL', title: 'B-CULL', lines: [] }, { key: 'CULL', title: 'CULL', lines: [] }, { key: 'BROILER', title: 'BROILER', lines: [] }];
   const byKey = new Map(blocks.map((b) => [b.key, b]));
   for (const line of data.chicken) {
-    const { key, title } = blockFor(line.product);
+    const { key, title } = blockFor(line.category, line.product);
     let block = byKey.get(key);
     if (!block) { block = { key, title, lines: [] }; blocks.push(block); byKey.set(key, block); }
     block.lines.push(line);
@@ -100,45 +116,24 @@ export function buildModel(data) {
   const eggs = new Map(EGG_SIZES.map((s) => [s, { size: s, units: new Map(), amount: 0 }]));
   const others = new Map();
   for (const l of data.other) {
-    const size = eggSize(l.product);
+    // An Eggs product goes on the EGGS table even when its name has no "egg" in it (for example "Itlog"): on the Asst. row unless the name gives a size.
+    const size = eggSize(l.product) ?? (l.kind === 'EGGS' ? 'Asst.' : null);
     if (size) {
       const row = eggs.get(size);
       row.units.set(l.unit, (row.units.get(l.unit) ?? 0) + l.qtyMilli);
       row.amount += l.amount;
     } else {
       const key = `${l.product}|${l.unit}`;
-      const row = others.get(key) ?? { product: l.product, unit: l.unit, qtyMilli: 0, amount: 0 };
-      row.qtyMilli += l.qtyMilli; row.amount += l.amount;
+      const row = others.get(key) ?? { product: l.product, unit: l.unit, qtyMilli: 0, pieces: 0, amount: 0 };
+      row.qtyMilli += l.qtyMilli; row.amount += l.amount; row.pieces += l.pieces ?? 0;
       others.set(key, row);
     }
   }
   const eggRows = [...eggs.values()].map((r) => ({ ...r, sold: [...r.units].map(([unit, q]) => `${qtyText(q)} ${unit}`).join(' + ') }));
+  // Something sold by the kilo also shows the pieces it was (for example "2.4 kg (2 pcs)"): the stock is counted in pieces.
   const otherRows = [...others.values()].sort((a, b) => a.product.localeCompare(b.product) || a.unit.localeCompare(b.unit))
-    .map((r) => ({ ...r, sold: `${qtyText(r.qtyMilli)} ${r.unit}` }));
+    .map((r) => ({ ...r, sold: `${qtyText(r.qtyMilli)} ${r.unit}${r.pieces ? ` (${r.pieces} pc${r.pieces === 1 ? '' : 's'})` : ''}` }));
   return { blocks, eggRows, otherRows, eggAmount: eggRows.reduce((s, r) => s + r.amount, 0), otherAmount: otherRows.reduce((s, r) => s + r.amount, 0) };
-}
-
-// ---- CSV: one row per sale line ---------------------------------------------------------------------
-
-const csvCell = (v) => {
-  if (v === null || v === undefined) return '';
-  let s = String(v);
-  if (/^[=+\-@]/.test(s) && Number.isNaN(Number(s))) s = `'${s}`;
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
-const pesos = (c) => (c / 100).toFixed(2);
-
-export function buildDailyCsv(data) {
-  const head = ['Date', 'Time', 'Order Number', 'Cashier', "Customer's #/Name", 'Section', 'Product', '# of Heads', 'Kilos or Quantity', 'Unit',
-    'Price (per kg or per unit)', 'Service', 'Price (kilos x price)', 'Amount', 'Note'];
-  const rows = [];
-  for (const l of data.chicken) {
-    rows.push([data.date, l.time, l.order, l.cashier, l.customer, blockFor(l.product).title, l.product, l.heads, l.kilos, 'kg', pesos(l.price), pesos(l.service), pesos(l.weightAmount), pesos(l.amount), l.refunded ? 'Refunded' : '']);
-  }
-  for (const l of data.other) {
-    rows.push([data.date, l.time, l.order, l.cashier, l.customer, eggSize(l.product) ? 'EGGS' : 'OTHERS', l.product, '', qtyText(l.qtyMilli), l.unit, pesos(l.price), '', pesos(l.amount), pesos(l.amount), l.refunded ? 'Refunded' : '']);
-  }
-  return '\ufeff' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
 // ---- The Excel sheet that looks like the paper form ----------------------------------------------------
@@ -280,11 +275,18 @@ export function buildDailyXlsx(data) {
   g.box(expTitle, eggC, expTitle, eggC + 4, 'EXPENSES', S.section);
   g.box(expTitle + 1, eggC, expTitle + 1, eggC + 3, 'EXPENSE ITEMS', S.head);
   g.put(expTitle + 1, eggC + 4, 'AMOUNT', S.head);
-  const EXPENSE_ROWS = 10;
-  for (let i = 0; i < EXPENSE_ROWS; i++) { g.box(expTitle + 2 + i, eggC, expTitle + 2 + i, eggC + 3, null, S.blank); g.put(expTitle + 2 + i, eggC + 4, null, S.blankPeso); }
+  // Revision 12: the expenses typed in New order > Advanced fill the rows; the rest stay empty to write in by hand.
+  const expenses = data.expenses ?? [];
+  const EXPENSE_ROWS = Math.max(10, expenses.length);
+  for (let i = 0; i < EXPENSE_ROWS; i++) {
+    const e = expenses[i];
+    g.box(expTitle + 2 + i, eggC, expTitle + 2 + i, eggC + 3, e ? e.item : null, e ? S.text : S.blank);
+    g.put(expTitle + 2 + i, eggC + 4, e ? pesoNum(e.amount) : null, S.blankPeso);
+  }
   const expTotalRow = expTitle + 2 + EXPENSE_ROWS;
+  const expensesTotal = pesoNum(data.expensesTotal ?? 0);
   g.box(expTotalRow, eggC, expTotalRow, eggC + 3, 'TOTAL AMOUNT', S.totalLabel);
-  g.put(expTotalRow, eggC + 4, 0, S.totalPeso, { f: `SUM(${range(expTitle + 2, expTotalRow - 1, eggC + 4)})` });
+  g.put(expTotalRow, eggC + 4, expensesTotal, S.totalPeso, { f: `SUM(${range(expTitle + 2, expTotalRow - 1, eggC + 4)})` });
   const expenseCell = ref(expTotalRow, eggC + 4);
 
   // ---- Others ----
@@ -301,11 +303,22 @@ export function buildDailyXlsx(data) {
   g.box(othTotalRow, othC, othTotalRow, othC + 1, 'TOTAL AMOUNT', S.totalLabel);
   g.put(othTotalRow, othC + 2, pesoNum(m.otherAmount), S.totalPeso, { f: `SUM(${range(5, othTotalRow - 1, othC + 2)})` });
 
-  // ---- Other collections (counted by hand) ----
+  // ---- Discounts (Revision 11, in place of "Other collections"): one row per discounted order, then the total of all discounts ----
   let r = othTotalRow + 2;
-  g.box(r, othC, r, othC + 2, 'OTHER COLLECTIONS', S.section);
-  for (let i = 0; i < 6; i++) { g.box(r + 1 + i, othC, r + 1 + i, othC + 1, null, S.blank); g.put(r + 1 + i, othC + 2, null, S.blankPeso); }
-  r += 8;
+  g.box(r, othC, r, othC + 2, 'DISCOUNTS', S.section);
+  ['CUSTOMER NAME', 'REASON', 'DISCOUNT'].forEach((h, i) => g.put(r + 1, othC + i, h, S.head));
+  const discRows = Math.max(3, data.discounts.length);
+  for (let i = 0; i < discRows; i++) {
+    const d = data.discounts[i];
+    g.put(r + 2 + i, othC, d ? d.customer : null, S.text);
+    g.put(r + 2 + i, othC + 1, d ? d.reason : null, S.text);
+    g.put(r + 2 + i, othC + 2, d ? pesoNum(d.amount) : null, S.peso);
+  }
+  const discTotalRow = r + 2 + discRows;
+  g.box(discTotalRow, othC, discTotalRow, othC + 1, 'TOTAL DISCOUNTS', S.totalLabel);
+  g.put(discTotalRow, othC + 2, pesoNum(data.discount), S.totalPeso, { f: `SUM(${range(r + 2, discTotalRow - 1, othC + 2)})` });
+  const discountCell = ref(discTotalRow, othC + 2);
+  r = discTotalRow + 2;
 
   // ---- Collections, gross sales, net sales ----
   g.box(r, othC, r, othC + 2, 'COLLECTIONS', S.section);
@@ -320,26 +333,52 @@ export function buildDailyXlsx(data) {
   g.put(grossRow, othC + 2, round2(gross), S.totalPeso, { f: `SUM(${range(first, grossRow - 1, othC + 2)})` });
   const discRow = grossRow + 1;
   g.box(discRow, othC, discRow, othC + 1, 'LESS DISCOUNTS', S.label);
-  g.put(discRow, othC + 2, pesoNum(data.discount), S.peso);
+  g.put(discRow, othC + 2, pesoNum(data.discount), S.peso, { f: discountCell });
   const refRow = discRow + 1;
   g.box(refRow, othC, refRow, othC + 1, 'LESS REFUNDS', S.label);
   g.put(refRow, othC + 2, pesoNum(data.refunds), S.peso);
   const expRow = refRow + 1;
   g.box(expRow, othC, expRow, othC + 1, 'LESS EXPENSES', S.label);
-  g.put(expRow, othC + 2, 0, S.peso, { f: expenseCell });
+  g.put(expRow, othC + 2, expensesTotal, S.peso, { f: expenseCell });
   const netRow = expRow + 1;
+  const net = round2(gross - pesoNum(data.discount) - pesoNum(data.refunds) - expensesTotal);
   g.box(netRow, othC, netRow, othC + 1, 'NET SALES', S.grand);
-  g.put(netRow, othC + 2, round2(gross - pesoNum(data.discount) - pesoNum(data.refunds)), S.totalPeso,
+  g.put(netRow, othC + 2, net, S.totalPeso,
     { f: `${ref(grossRow, othC + 2)}-${ref(discRow, othC + 2)}-${ref(refRow, othC + 2)}-${ref(expRow, othC + 2)}` });
 
-  // ---- Cash breakdown (counted by hand) ----
+  // ---- Cash breakdown (Revision 12: every bill and coin, from the count saved in New order > Advanced) ----
+  // PIECES is how many of each; AMOUNT = pieces x the bill or coin (a formula, so a number typed in by hand adds up too).
   const cash = netRow + 2;
+  const counts = data.cashCount?.counts ?? null;
   g.box(cash, othC, cash, othC + 2, 'CASH BREAKDOWN', S.section);
-  ['500/1000', 'OTHER BILLS', 'COINS'].forEach((label, i) => { g.box(cash + 1 + i, othC, cash + 1 + i, othC + 1, label, S.label); g.put(cash + 1 + i, othC + 2, null, S.blankPeso); });
-  g.box(cash + 4, othC, cash + 4, othC + 1, 'OVERALL TOTAL', S.grand);
-  g.put(cash + 4, othC + 2, 0, S.totalPeso, { f: `SUM(${range(cash + 1, cash + 3, othC + 2)})` });
-  g.box(cash + 5, othC, cash + 5, othC + 1, 'EXCESS/LOSS', S.grand);
-  g.put(cash + 5, othC + 2, null, S.blankPeso);
+  ['BILLS AND COINS', 'PIECES', 'AMOUNT'].forEach((h, i) => g.put(cash + 1, othC + i, h, S.head));
+  const first0 = cash + 2;
+  CASH_DENOMINATIONS.forEach((d, i) => {
+    const r = first0 + i;
+    const n = counts ? Number(counts[d.key]) || 0 : null;
+    g.put(r, othC, `${d.label} ${d.type}`, S.label);
+    g.put(r, othC + 1, n, S.count);
+    g.put(r, othC + 2, n === null ? 0 : round2((n * d.centavos) / 100), S.peso, { f: `${ref(r, othC + 1)}*${d.centavos / 100}` });
+  });
+  const totalRow0 = first0 + CASH_DENOMINATIONS.length;
+  const overall = counts ? pesoNum(data.cashCount.total_centavos) : 0;
+  g.box(totalRow0, othC, totalRow0, othC + 1, 'OVERALL TOTAL', S.grand);
+  g.put(totalRow0, othC + 2, overall, S.totalPeso, { f: `SUM(${range(first0, totalRow0 - 1, othC + 2)})` });
+  // What the drawer should hold: net sales, less what was paid by GCash, Maya, bank or other (that money is not in the drawer).
+  const nonCashRow = totalRow0 + 1;
+  g.box(nonCashRow, othC, nonCashRow, othC + 1, 'LESS NON-CASH PAYMENTS', S.label);
+  g.put(nonCashRow, othC + 2, pesoNum(data.nonCash ?? 0), S.peso);
+  const expectedRow = nonCashRow + 1;
+  const expected = round2(net - pesoNum(data.nonCash ?? 0));
+  g.box(expectedRow, othC, expectedRow, othC + 1, 'EXPECTED CASH', S.label);
+  g.put(expectedRow, othC + 2, expected, S.peso, { f: `${ref(netRow, othC + 2)}-${ref(nonCashRow, othC + 2)}` });
+  const excessRow = expectedRow + 1;
+  g.box(excessRow, othC, excessRow, othC + 1, 'EXCESS/LOSS', S.grand);
+  g.put(excessRow, othC + 2, counts ? round2(overall - expected) : '', S.totalPeso,
+    { f: `IF(${ref(totalRow0, othC + 2)}=0,"",${ref(totalRow0, othC + 2)}-${ref(expectedRow, othC + 2)})` });
+  if (data.cashCount) {
+    g.box(excessRow + 1, othC, excessRow + 1, othC + 2, `Counted by ${data.cashCount.by} at ${toPhtDateTime(data.cashCount.counted_at).slice(11)}`, S.note);
+  }
 
   const sheet = new Sheet('Daily Sales Report');
   sheet.rows = g.rows();
@@ -347,7 +386,7 @@ export function buildDailyXlsx(data) {
   sheet.widths = [
     ...m.blocks.flatMap(() => [9, 18, 7, 8, 8, 9, 10]),
     7, 6, 18, 6, 10,
-    22, 14, 10,
+    22, 24, 12,
   ];
   sheet.heights = { [R.title]: 30, [R.ledgerHead]: 30 };
   sheet.print = { landscape: true, fitWidth: true };
@@ -358,17 +397,22 @@ export function buildDailyXlsx(data) {
   const texts = [
     ['How this report is filled in', 'noteBold'],
     ['Filled in by the app from the orders of the day: date, time span, cashier, the ledger of each chicken type, heads sold, eggs and other products sold, and the sales totals.', 'note'],
-    ['Left empty on purpose, for the cashier to write or type in: Chicken Balance, Additional, TOTAL and LEFT for each chicken type; egg BEG and LEFT; EXPENSES; OTHER COLLECTIONS; CASH BREAKDOWN and EXCESS/LOSS. The totals below them (expenses total, overall total, less expenses, net sales) update by themselves when you type numbers in.', 'note'],
+    ['Left empty on purpose, for the cashier to write or type in: Chicken Balance, Additional, TOTAL and LEFT for each chicken type; egg BEG and LEFT. The totals update by themselves when you type numbers in.', 'note'],
+    ['EXPENSES are the ones typed in New order > Advanced > Expenses for this business day (the empty rows below them can still be written in). LESS EXPENSES takes their total off.', 'note'],
+    ['CASH BREAKDOWN is the latest count saved in New order > Advanced > Cash breakdown: PIECES of each bill and coin, AMOUNT = pieces x value. OVERALL TOTAL adds them up. EXPECTED CASH = NET SALES - LESS NON-CASH PAYMENTS (GCash, Maya, bank and other payments are not in the drawer). EXCESS/LOSS = OVERALL TOTAL - EXPECTED CASH: above zero is extra cash, below zero is missing cash. It stays empty until the cash is counted.', 'note'],
+    ['KATAY / DEAD (REF) lists the Katay and Dead chicken sold from the ref, at the price per kg the cashier typed (no service fee). It is shown only on a day that sold some.', 'note'],
+    ['DISCOUNTS lists every discounted order of the day (customer, reason, discount); TOTAL DISCOUNTS adds them up and is what LESS DISCOUNTS takes off.', 'note'],
     ['', 'note'],
     ['What the ledger columns mean', 'noteBold'],
     ['# of HDS = number of chickens (heads) on that sale. KILOS = their combined weight.', 'note'],
     ['Price = price per kg. Service = the service fee for that line (charged per head, so 3 heads at ₱25 = ₱75). The second Price = kilos × price (before the service fee). AMOUNT = the line total.', 'note'],
-    ['A product that is not B-cull, Cull or Broiler gets its own block to the right of the Broiler block.', 'note'],
+    ['Each chicken product goes into the block chosen as its category on the Products screen (for example Brown Cull Chicken is in CULL). A product whose category is "Other chicken" gets its own block to the right of the Broiler block.', 'note'],
+    ['The report date is the business day: the orders counted on that day of the Daily Inventory.', 'note'],
     ['', 'note'],
     ['Which orders are included', 'noteBold'],
     ['Only orders that were sold. Canceled orders and orders that were replaced by a changed order are not listed. A refunded order is listed and marked "(refunded)"; the refund is taken off under LESS REFUNDS.', 'note'],
     ['GROSS SALES is the sum of the sales before discounts. LESS DISCOUNTS and LESS REFUNDS are added lines that the paper form does not have. NET SALES = gross sales - discounts - refunds - expenses.', 'note'],
-    ['Eggs: SOLD is shown in the units they were sold in (for example 2 dozen + 5 piece). Egg sizes come from the product name (Small, Medium, Large, XL; anything else is counted as Assorted).', 'note'],
+    ['Eggs: SOLD is shown in the units they were sold in (for example 2 dozen + 5 piece). Egg sizes come from the product name (Small, Medium, Large, XL). Assorted eggs (collected in the shop from different chickens) go on the Asst. row: name the product for example "Eggs Assorted". An egg product whose name gives no size is counted as Assorted too.', 'note'],
   ];
   texts.forEach(([t, st]) => notes.addRow([{ v: t, s: S[st] }]));
 

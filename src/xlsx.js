@@ -65,6 +65,27 @@ export const weight = (n) => (n === null || n === undefined ? null : { v: n, s: 
 export const formula = (f, cached, s) => ({ f, v: cached, s });
 export const header = (text) => ({ v: text, s: 'header' });
 
+/** About how many characters wide a cell shows in Excel (Arial 10): text by its longest line, numbers as their format shows them. */
+function displayLength(cell) {
+  if (cell === null || cell === undefined || cell === '') return 0;
+  const obj = typeof cell === 'object' ? cell : { v: cell };
+  const v = obj.v;
+  if (v === null || v === undefined || v === '') return 0;
+  const grouped = (n, decimals) => {
+    const [whole, frac] = Math.abs(n).toFixed(decimals).split('.');
+    return whole.length + Math.floor((whole.length - 1) / 3) + (frac ? frac.length + 1 : 0) + (n < 0 ? 1 : 0);
+  };
+  let len;
+  if (obj.s === 'date') len = 10;
+  else if (typeof v === 'number') {
+    if (obj.s === 'money' || obj.s === 'boldMoney') len = grouped(v, 2);
+    else if (obj.s === 'weight') len = grouped(v, 3);
+    else len = String(Number(v.toFixed(3))).length;
+  } else len = Math.max(...String(v).split('\n').map((line) => line.length));
+  // Bold text (headings) is a little wider.
+  return obj.s === 'header' || obj.s === 'bold' || obj.s === 'boldMoney' ? len * 1.12 : len;
+}
+
 export class Sheet {
   constructor(name) {
     this.name = name;
@@ -78,6 +99,26 @@ export class Sheet {
     this.rules = [];        // { sqref, formula, dxf }
   }
   addRow(cells) { this.rows.push(cells); return this; }
+
+  /**
+   * Revision 12: make every column wide enough for its heading and for the longest value in it, so no text runs over into the next
+   * column and nothing is cut off. Widths already set are kept as a minimum. skipRows (1-based) are not measured: titles and long
+   * notes that are meant to run across the empty cells beside them. Very long text stops at `max` characters (and wraps when the cell
+   * style wraps).
+   */
+  fitColumns({ min = 6, max = 60, skipRows = [], pad = 2 } = {}) {
+    const widths = [...this.widths];
+    this.rows.forEach((cells, r) => {
+      if (skipRows.includes(r + 1)) return;
+      cells.forEach((cell, c) => {
+        const len = displayLength(cell);
+        if (!len) return;
+        widths[c] = Math.max(widths[c] ?? 0, min, Math.min(max, Math.ceil(len) + pad));
+      });
+    });
+    this.widths = Array.from({ length: widths.length }, (_, i) => widths[i] ?? min);
+    return this;
+  }
 
   xml(selected) {
     const out = [];

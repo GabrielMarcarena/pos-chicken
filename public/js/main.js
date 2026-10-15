@@ -4,15 +4,19 @@ import { $, esc, toast } from './util.js';
 import { state, loadDraft, saveDraft, refreshConfig } from './state.js';
 import { mountLogin } from './views/login.js';
 import { mountCheckout } from './views/checkout.js';
+import { mountBoard } from './views/board.js';
 import { mountOrders } from './views/orders.js';
 import { mountCatalog } from './views/catalog.js';
+import { mountInventory } from './views/inventory.js';
 import { mountUsers } from './views/users.js';
 
 const RANK = { cashier: 1, manager: 2, admin: 3 };
 const ROUTES = [
   { path: '#/new', label: 'New order', role: 'cashier', mount: mountCheckout },
+  { path: '#/board', label: 'Order List', role: 'cashier', mount: mountBoard },
   { path: '#/orders', label: 'Orders', role: 'cashier', mount: mountOrders },
   { path: '#/products', label: 'Products', role: 'manager', mount: mountCatalog },
+  { path: '#/inventory', label: 'Daily Inventory', role: 'cashier', mount: mountInventory },   // right beside Products
   { path: '#/users', label: 'Users', role: 'admin', mount: mountUsers },
 ];
 

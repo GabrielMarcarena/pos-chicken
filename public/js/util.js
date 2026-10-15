@@ -1,5 +1,6 @@
 // Small helpers shared by every screen.
-import { LABELS } from '/shared/constants.js';
+import { LABELS, COUNTS_AS_SALE, FULFILLMENT, FULFILLMENT_LABELS } from '/shared/constants.js';
+import { serviceLabel } from '/shared/rules.js';
 export { formatPeso, formatKg, formatThousandths } from '/shared/money.js';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
@@ -88,17 +89,59 @@ export function statusBadge(status) {
   return `<span class="badge badge--${status.toLowerCase()}">${esc(text)}</span>`;
 }
 
-/** Plain text list of the preparation chosen on a chicken line: service, Dara, then the slice size or Dukot. */
+/**
+ * The status an order shows on the Orders screen. It is the same saved value the Order List board uses (orders.fulfillment_status),
+ * so the two screens can never disagree. An order that is on the Order List shows its column: Ongoing, Standby or Complete.
+ * A refunded order is still on the list, so it also carries its Refunded badge. A canceled or replaced order is not on the
+ * Order List (it was never going to be picked up), so it shows Canceled or Replaced instead.
+ */
+export function orderStatusBadges(o) {
+  const onList = COUNTS_AS_SALE.includes(o.status) && FULFILLMENT.includes(o.fulfillment_status);
+  if (!onList) return statusBadge(o.status);
+  const stage = `<span class="badge badge--${o.fulfillment_status.toLowerCase()}" data-stage="${o.fulfillment_status}">${esc(FULFILLMENT_LABELS[o.fulfillment_status])}</span>`;
+  return o.status === 'COMPLETED' ? stage : `${stage} ${statusBadge(o.status)}`;
+}
+
+/** Plain text list of the preparation chosen on a chicken line: the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot), With Blood, then the slice size. */
 export function prepChips(prep) {
   const chips = [];
-  if (prep.feather) chips.push(label(prep.feather));
-  if (prep.dara) chips.push('Dara');
+  const service = serviceLabel({ feather: prep.feather, cut: prep.cut });
+  if (service) chips.push(service);
+  if (prep.dara) chips.push(label('DARA'));
   if (prep.cut === 'SLICE') chips.push(label(prep.sliceSize ?? prep.slice_size));
-  if (prep.cut === 'DUKOT') chips.push('Dukot');
   return chips;
 }
 
-/** A small picture for a product card, picked from the product name so new products get a sensible one. */
+/** A small picture for a product card, picked from the product name so new products get a sensible one (used when no photo is uploaded). */
 const ICONS = [[/egg/i, '🥚'], [/etag/i, '🥓'], [/garlic/i, '🧄'], [/onion/i, '🧅'], [/laya|ginger|turmeric|spice/i, '🌿'],
-  [/rice/i, '🍚'], [/sayote|chayote|vegetable|veggie/i, '🥒'], [/chicken|broiler|cull|manok|native/i, '🐔']];
+  [/rice/i, '🍚'], [/sayote|chayote|vegetable|veggie/i, '🥒'], [/duck|itik|pato/i, '🦆'], [/catfish|hito|fish|tilapia|bangus/i, '🐟'],
+  [/chicken|broiler|cull|manok|native/i, '🐔']];
 export const iconFor = (name) => ICONS.find(([re]) => re.test(name))?.[1] ?? '🛒';
+
+/**
+ * The picture of a product card (Revision 11): the uploaded photo when there is one, otherwise the icon. If the photo cannot be loaded,
+ * the icon takes its place (see watchImages). kind is 'chicken' or 'other'.
+ */
+export function productPicture(kind, product) {
+  const icon = `<span class="ico-fallback" aria-hidden="true">${iconFor(product.name)}</span>`;
+  if (!product.image_version) return icon;
+  return `<img class="pic" src="/api/product-images/${kind}/${product.id}?v=${encodeURIComponent(product.image_version)}" alt="" loading="lazy" decoding="async">${icon}`;
+}
+
+/** A photo that fails to load is hidden, and the icon next to it shows instead. One listener per element (inline handlers are not allowed). */
+const watched = new WeakSet();
+export function watchImages(root) {
+  if (watched.has(root)) return;
+  watched.add(root);
+  root.addEventListener('error', (e) => {
+    if (e.target instanceof HTMLImageElement && e.target.classList.contains('pic')) e.target.closest('.ico')?.classList.add('ico--broken');
+  }, true);
+}
+
+/** "2 pcs · 1.5 kg" for a line sold by the kilo with its pieces, "1.5 kg" for an older one, "3 piece" for a fixed unit. */
+export function otherQtyText(line) {
+  if (line.sold_by !== 'PER_KG') return `${line.quantity_milli / 1000} ${line.unit}`;
+  const kg = `${formatThousandthsLocal(line.quantity_milli)} kg`;
+  return line.pieces ? `${line.pieces} pc${line.pieces === 1 ? '' : 's'} · ${kg}` : kg;
+}
+const formatThousandthsLocal = (n) => { let s = (n / 1000).toFixed(3).replace(/0+$/, ''); if (s.endsWith('.')) s += '0'; return s; };

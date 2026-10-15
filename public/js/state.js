@@ -2,15 +2,15 @@
 // The unsent order is kept in sessionStorage so a refresh or an accidental Back never loses it.
 // (This is only a convenience copy. The saved record always lives on the server.)
 import { uuid } from './util.js';
-import { chickenLine, otherLine, grandTotal, discountAmount } from '/shared/pricing.js';
+import { chickenLine, otherLine, refLine, grandTotal, discountAmount } from '/shared/pricing.js';
 import { parseWeightToGrams, parseQuantityToMilli, parseWholeQuantityToMilli, parsePesosToCentavos, parsePercentToBp, parseHeads } from '/shared/money.js';
 
 export const state = { user: null, config: null, draft: null };
 
 export function newDraft() {
   return {
-    items: [], otherItems: [], customerNumber: '', submissionKey: uuid(),
-    payment: { method: 'NONE', amount: '', amountEdited: false, paidAt: '', accountName: '', accountNumber: '', reference: '' },
+    items: [], otherItems: [], refItems: [], customerNumber: '', submissionKey: uuid(),
+    payment: { method: 'NONE', amount: '', amountEdited: false, received: '', paidAt: '', accountName: '', accountNumber: '', reference: '' },
     discount: { type: 'NONE', value: '', reason: '', note: '' },
     changeOf: null, reason: { code: '', note: '' }, reviewed: false,
   };
@@ -21,7 +21,7 @@ export function loadDraft() {
     const saved = JSON.parse(sessionStorage.getItem('pos-draft') ?? 'null');
     if (saved && saved.userId === state.user?.id) {
       const fresh = newDraft();
-      state.draft = { ...fresh, ...saved.draft, discount: { ...fresh.discount, ...saved.draft.discount }, payment: { ...fresh.payment, ...saved.draft.payment } };
+      state.draft = { ...fresh, ...saved.draft, refItems: saved.draft.refItems ?? [], discount: { ...fresh.discount, ...saved.draft.discount }, payment: { ...fresh.payment, ...saved.draft.payment } };
       return;
     }
   } catch { /* ignore a damaged copy */ }
@@ -60,10 +60,25 @@ export function priceItem(item) {
 export function priceOther(item) {
   const found = findOption(item.optionId);
   if (!found) return null;
-  // Fixed-price items (piece, dozen, pack, batch) are whole numbers; per-kg items take a weight with decimals.
-  const quantityMilli = found.option.sold_by === 'PER_KG' ? parseQuantityToMilli(item.quantity) : parseWholeQuantityToMilli(item.quantity);
-  if (quantityMilli === null) return null;
-  return { product: found.product, option: found.option, quantityMilli, ...otherLine({ unitPriceCentavos: found.option.price_centavos, quantityMilli }) };
+  // Fixed-price items (piece, dozen, pack, batch) are whole numbers; per-kg items take a weight with decimals and (Revision 11) the
+  // number of pieces weighed, which is what comes off the stock.
+  const perKg = found.option.sold_by === 'PER_KG';
+  const quantityMilli = perKg ? parseQuantityToMilli(item.quantity) : parseWholeQuantityToMilli(item.quantity);
+  const pieces = perKg ? parseHeads(item.pieces ?? '1') : null;
+  if (quantityMilli === null || (perKg && pieces === null)) return null;
+  return { product: found.product, option: found.option, quantityMilli, pieces, ...otherLine({ unitPriceCentavos: found.option.price_centavos, quantityMilli }) };
+}
+
+/**
+ * Price one Katay or Dead chicken line from the ref (Revision 12): the price per kg the cashier typed x the weight of all the heads.
+ * No service fee. Returns null while the line is not valid.
+ */
+export function priceRef(item) {
+  const weightG = parseWeightToGrams(item.weight);
+  const heads = parseHeads(item.heads ?? '1');
+  const price = parsePesosToCentavos(item.price);
+  if (weightG === null || heads === null || price === null || price <= 0) return null;
+  return { kind: item.kind, name: state.config?.ref_labels?.[item.kind] ?? item.kind, weightG, heads, price, ...refLine({ pricePerKgCentavos: price, weightG }) };
 }
 
 /** The optional discount as typed on the review screen: { amount, error }. */
@@ -80,15 +95,76 @@ export function draftDiscount(subtotal, d) {
 
 /** subtotal (all lines), discount, and the total the customer pays. */
 export function draftTotals(draft = state.draft) {
-  const subtotal = grandTotal([...draft.items.map((i) => priceItem(i)?.lineTotal ?? 0), ...draft.otherItems.map((i) => priceOther(i)?.lineTotal ?? 0)]);
+  const subtotal = grandTotal([...draft.items.map((i) => priceItem(i)?.lineTotal ?? 0), ...draft.otherItems.map((i) => priceOther(i)?.lineTotal ?? 0),
+    ...(draft.refItems ?? []).map((i) => priceRef(i)?.lineTotal ?? 0)]);
   const { amount, error } = draftDiscount(subtotal, draft.discount);
   return { subtotal, discount: amount, discountError: error, total: subtotal - amount };
 }
 
 export const draftTotal = (draft = state.draft) => draftTotals(draft).total;
 
-export const draftLineCount = (draft = state.draft) => draft.items.length + draft.otherItems.length;
+export const draftLineCount = (draft = state.draft) => draft.items.length + draft.otherItems.length + (draft.refItems?.length ?? 0);
 
 export async function refreshConfig(api) {
   state.config = await api('GET', '/api/config');
+}
+
+// ---- Stock (Revision 9) -----------------------------------------------------------------------------------------
+// The server sends what can still be sold on the open business day (the New Total of the Daily Inventory) in config.stock.
+// The screen subtracts what the order being typed already asks for, so the cashier sees what is really left for this order.
+// The server checks again when the order is saved; that check is the one that counts.
+
+/** True when the server sent stock figures (so the screen can check quantities). */
+export const hasStock = () => Boolean(state.config?.stock);
+
+/** Heads saved as available for a chicken product on the open business day. */
+export const savedHeads = (productId) => state.config?.stock?.chicken_heads?.[productId] ?? 0;
+/**
+ * The stock row an other-product option is counted on: its own, or (Revision 11) for an option sold by the kilo, the product's piece row.
+ */
+export const stockOptionOf = (optionId) => state.config?.stock?.other_stock_of?.[optionId] ?? optionId;
+/** Thousandths saved as available for an other-product option on the open business day (pieces, for an option sold by the kilo). */
+export const savedMilli = (optionId) => state.config?.stock?.other_milli?.[stockOptionOf(optionId)] ?? 0;
+
+/** What one draft or saved other-product line takes from its stock row, in thousandths: its pieces when sold by the kilo, else its quantity. */
+export function stockTaken(optionId, quantityText, piecesText) {
+  const found = findOption(optionId);
+  if (found?.option.sold_by === 'PER_KG') return (parseHeads(piecesText ?? '1') ?? 0) * 1000;
+  return parseWholeQuantityToMilli(quantityText) ?? 0;
+}
+
+/** What an order being changed holds right now: its own stock counts as free for the replacement (same business day only). */
+function released() {
+  const held = state.draft?.changeOf?.held;
+  const sameDay = held && state.draft.changeOf.dayId === state.config?.stock?.business_day_id;
+  return sameDay ? held : { chicken: {}, other: {} };
+}
+
+/** Heads of Katay or Dead chicken in the ref (Revision 12). Not tied to a business day. */
+export const savedRefHeads = (kind) => state.config?.stock?.ref_heads?.[kind] ?? 0;
+
+/**
+ * Heads of Katay or Dead chicken still available for the order being typed (not counting the line being edited). An order being changed
+ * gives its own ref heads back, whatever day it was sold on.
+ */
+export function availableRefHeads(kind, excludeKey = null) {
+  const used = (state.draft.refItems ?? []).filter((i) => i.kind === kind && i.key !== excludeKey).reduce((sum, i) => sum + (parseHeads(i.heads ?? '1') ?? 0), 0);
+  return Math.max(savedRefHeads(kind) + (state.draft?.changeOf?.held?.ref?.[kind] ?? 0) - used, 0);
+}
+
+/** Heads of a chicken product still available for the order being typed (not counting the line being edited). */
+export function availableHeads(productId, excludeKey = null) {
+  const used = state.draft.items.filter((i) => i.productId === productId && i.key !== excludeKey).reduce((sum, i) => sum + (parseHeads(i.heads ?? '1') ?? 0), 0);
+  return Math.max(savedHeads(productId) + (released().chicken[productId] ?? 0) - used, 0);
+}
+
+/**
+ * Thousandths of an other-product option still available for the order being typed (not counting the line being edited). Lines that
+ * share a stock row are added up: a whole duck by the piece and ducks by the kilo both come off "Ducks - piece".
+ */
+export function availableMilli(optionId, excludeKey = null) {
+  const row = stockOptionOf(optionId);
+  const used = state.draft.otherItems.filter((i) => stockOptionOf(i.optionId) === row && i.key !== excludeKey)
+    .reduce((sum, i) => sum + stockTaken(i.optionId, i.quantity, i.pieces), 0);
+  return Math.max(savedMilli(optionId) + (released().other[row] ?? 0) - used, 0);
 }
