@@ -3,16 +3,17 @@
 // The database is the source of truth. The export is a copy made on request, so the two cannot drift apart.
 // One row per line item; the order total and payment columns appear only on the first line of each order, so
 // adding up the Order Total column never double-counts an order.
+import { serviceOf } from '../../shared/rules.js';
 import { loadOrder } from './orders.js';
 import { productCode } from './catalog.js';
-import { LABELS, FEE_LABELS, REASONS, ACTION_LABELS, COUNTS_AS_SALE, DISCOUNT_REASONS } from '../../shared/constants.js';
+import { LABELS, SERVICE_LABELS, REASONS, ACTION_LABELS, COUNTS_AS_SALE, discountReasonLabel } from '../../shared/constants.js';
 import { PAYMENT_METHODS } from '../../shared/constants.js';
 import { toPhtDateTime } from '../time.js';
-import { Sheet, buildWorkbook, header, date, money, weight, formula, colName, dateSerial } from '../xlsx.js';
+import { Sheet, buildWorkbook, header, date, money, weight, formula } from '../xlsx.js';
 
 export const TX_HEADERS = [
   'Transaction Date', 'Transaction Time', 'Customer Number', 'Order Number', 'Line No.', 'Line Type', 'Product Name', 'Product ID',
-  'Unit Price (₱)', 'Quantity (kg for chicken)', 'Unit', 'Service', 'Dara', 'Cutting Method', 'Igorot Slice Size',
+  'Unit Price (₱)', 'Quantity (kg for chicken)', 'Unit', 'Service', 'With Blood', 'Cutting Method', 'Igorot Slice Size',
   'Service Fees (₱)', 'Item Total (₱)', 'Order Total (₱)', 'Status', 'Action Type', 'Reason', 'Cashier or User', 'Replaced By',
   'Payment Method', 'Amount Paid (₱)', 'Payment Date', 'Payment Time', 'Payment Account Name', 'Payment Account Number', 'Payment Reference',
   'Counts as Sale', 'Order Subtotal (₱)', 'Discount (₱)', 'Discount Reason', 'Number of Heads',
@@ -21,12 +22,17 @@ export const TX_HEADERS = [
 const pesos = (c) => c / 100;
 const countsAsSale = (status) => COUNTS_AS_SALE.includes(status);
 
-/** Gather orders (and their lines) whose business date is within [from, to]. */
+/**
+ * Gather orders (and their lines) whose business day is within [from, to]. Revision 11: the date of an order is the business day it was
+ * sold on (the day the Daily Inventory counts it on, also for a Standby order that is picked up days later), so the Excel file, the CSV,
+ * the Daily Report and the Daily Inventory always put an order on the same day. Orders saved before business days existed use their own date.
+ */
 export function gatherExport(db, { from, to }) {
   const f = /^\d{4}-\d{2}-\d{2}$/.test(from ?? '') ? from : '0000-01-01';
   const t = /^\d{4}-\d{2}-\d{2}$/.test(to ?? '') ? to : '9999-12-31';
-  const ids = db.prepare('SELECT id FROM orders WHERE business_date >= ? AND business_date <= ? ORDER BY id').all(f, t).map((r) => r.id);
-  const orders = ids.map((id) => loadOrder(db, id));
+  const found = db.prepare(`SELECT o.id, COALESCE(d.business_date, o.business_date) AS day FROM orders o LEFT JOIN business_days d ON d.id = o.business_day_id
+                            WHERE COALESCE(d.business_date, o.business_date) >= ? AND COALESCE(d.business_date, o.business_date) <= ? ORDER BY o.id`).all(f, t);
+  const orders = found.map((r) => ({ ...loadOrder(db, r.id), business_date: r.day }));
 
   const tx = [];
   const orderRows = [];
@@ -36,7 +42,7 @@ export function gatherExport(db, { from, to }) {
     const reason = lastAction ? `${REASONS[lastAction.reason_code] ?? lastAction.reason_code ?? ''}${lastAction.reason_note ? ': ' + lastAction.reason_note : ''}` : '';
     const when = toPhtDateTime(o.submitted_at);
     const discountReason = o.discount_centavos > 0
-      ? `${DISCOUNT_REASONS[o.discount_reason] ?? o.discount_reason}${o.discount_note ? ': ' + o.discount_note : ''} (${o.discount_type === 'PERCENT' ? `${o.discount_value / 100}%` : 'fixed'})` : '';
+      ? `${discountReasonLabel(o.discount_reason)}${o.discount_note ? ': ' + o.discount_note : ''} (${o.discount_type === 'PERCENT' ? `${o.discount_value / 100}%` : 'fixed'})` : '';
     const pay = o.payments[0];
     orderRows.push({
       date: o.business_date, number: o.order_number, customer: o.customer_number, status: o.status, total: pesos(o.total_centavos),
@@ -58,14 +64,22 @@ export function gatherExport(db, { from, to }) {
     for (const i of o.items) {
       tx.push({
         ...common(i.line_no), type: 'Chicken', product: i.product_name, productId: productCode(i.product_id), unitPrice: pesos(i.price_per_kg_centavos),
-        qty: i.weight_g / 1000, unit: 'kg', feather: i.feather_prep === 'LIVE' ? 'Live' : FEE_LABELS[i.feather_prep], dara: i.dara ? 'Yes' : 'No', cut: i.cut_method === 'NONE' ? 'None' : LABELS[i.cut_method],
+        qty: i.weight_g / 1000, unit: 'kg', feather: SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '', dara: i.dara ? 'Yes' : 'No', cut: i.cut_method === 'NONE' ? 'None' : LABELS[i.cut_method],
         slice: i.slice_size ? LABELS[i.slice_size] : '', fees: pesos(i.service_fee_centavos), itemTotal: pesos(i.line_total_centavos), heads: i.heads,
       });
     }
     for (const i of o.other_items) {
       tx.push({
         ...common(i.line_no), type: 'Other Product', product: i.product_name, productId: `OP-${String(i.other_product_id).padStart(3, '0')}`,
-        unitPrice: pesos(i.unit_price_centavos), qty: i.quantity_milli / 1000, unit: i.unit, feather: '', dara: '', cut: '', slice: '', fees: 0, itemTotal: pesos(i.line_total_centavos), heads: null,
+        unitPrice: pesos(i.unit_price_centavos), qty: i.quantity_milli / 1000, unit: i.unit, feather: '', dara: '', cut: '', slice: '', fees: 0, itemTotal: pesos(i.line_total_centavos),
+        heads: i.pieces ?? null,   // per-kg lines: the pieces weighed (the stock is counted in pieces)
+      });
+    }
+    // Revision 12: Katay and Dead chicken sold from the ref, priced per kg with no service fee.
+    for (const i of o.ref_items) {
+      tx.push({
+        ...common(i.line_no), type: 'Ref Chicken', product: i.product_name, productId: `REF-${i.ref_kind}`, unitPrice: pesos(i.price_per_kg_centavos),
+        qty: i.weight_g / 1000, unit: 'kg', feather: '', dara: '', cut: '', slice: '', fees: 0, itemTotal: pesos(i.line_total_centavos), heads: i.heads,
       });
     }
     for (const e of o.events) {
@@ -81,7 +95,7 @@ export function gatherExport(db, { from, to }) {
 
 // ---- CSV ----------------------------------------------------------------------------------------
 
-const csvCell = (v) => {
+export const csvCell = (v) => {
   if (v === null || v === undefined) return '';
   let s = String(v);
   // Stop spreadsheet programs from running text that starts like a formula.
@@ -95,10 +109,50 @@ export function txRowValues(r) {
     r.payName, r.payNumber, r.payRef, countsAsSale(r.status) ? 'Yes' : 'No', r.orderSubtotal, r.orderDiscount, r.orderDiscountReason, r.heads];
 }
 
+/**
+ * The CSV (Revision 11): only the columns the shop uses for its reports, in the shop's order, one row per order line, sorted by business
+ * date and then order number. Only orders that were sold are in it (Completed and Refunded, the same rule as every sales total);
+ * canceled and replaced orders are left out here and stay in the Excel file, marked in red and gray. The order columns (subtotal,
+ * discount, order total, payment) are filled on the first line of each order only, so adding a column up never counts an order twice.
+ * The Excel file keeps every detail of every order.
+ */
+export const CSV_HEADERS = [
+  'Transaction Date', 'Order Number', 'Cashier or User', 'Customer Number', 'Product Name', 'Number of Heads',
+  'Quantity (kg for chicken)', 'Unit', 'Unit Price (\u20b1)', 'Service', 'Service Fees (\u20b1)', 'Item Total (\u20b1)',
+  'Order Subtotal (\u20b1)', 'Discount (\u20b1)', 'Discount Reason', 'Order Total (\u20b1)', 'Payment Method', 'Amount Paid (\u20b1)',
+];
+
+const twoDp = (n) => (n === null || n === undefined ? '' : n.toFixed(2));
+
+/** The rows of the CSV and of the Sales List: sold orders only, by business date, then order number, then line. */
+const soldLines = (data) => data.tx.filter((r) => countsAsSale(r.status))
+  .sort((a, b) => a.date.localeCompare(b.date) || a.number.localeCompare(b.number) || a.lineNo - b.lineNo);
+
 export function buildCsv(data) {
-  const lines = [TX_HEADERS.map(csvCell).join(',')];
-  for (const r of data.tx) lines.push(txRowValues(r).map(csvCell).join(','));
+  const lines = [CSV_HEADERS.map(csvCell).join(',')];
+  for (const r of soldLines(data)) {
+    lines.push([r.date, r.number, r.cashier, r.customer, r.product, r.heads ?? '', r.qty, r.unit, twoDp(r.unitPrice), r.feather, r.type === 'Chicken' ? twoDp(r.fees) : '',
+      twoDp(r.itemTotal), twoDp(r.orderSubtotal), twoDp(r.orderDiscount), r.orderDiscountReason, twoDp(r.orderTotal), r.payMethod, twoDp(r.payAmount)].map(csvCell).join(','));
+  }
   return '\ufeff' + lines.join('\r\n') + '\r\n'; // BOM so Excel reads the peso sign correctly
+}
+
+/**
+ * The Sales List (Revision 12): exactly the CSV's 18 columns and rows, as an Excel file. A CSV file cannot hold column widths, so Excel
+ * opens it with every column at the same narrow width and the headings and names run into each other. Here every column is as wide as
+ * its heading and its longest value, the heading row stays at the top while scrolling, and each heading has a filter.
+ */
+export function buildSalesListXlsx(data) {
+  const sheet = new Sheet('Sales List');
+  sheet.freezeHeader = true; sheet.filter = true;
+  sheet.addRow(CSV_HEADERS.map(header));
+  for (const r of soldLines(data)) {
+    sheet.addRow([date(r.date), r.number, r.cashier, r.customer, r.product, r.heads ?? null, weight(r.qty), r.unit, money(r.unitPrice), r.feather,
+      r.type === 'Chicken' ? money(r.fees) : null, money(r.itemTotal), money(r.orderSubtotal), money(r.orderDiscount), r.orderDiscountReason,
+      money(r.orderTotal), r.payMethod, money(r.payAmount)]);
+  }
+  sheet.fitColumns({ min: 8, max: 45 });
+  return buildWorkbook([sheet]);
 }
 
 // ---- XLSX ---------------------------------------------------------------------------------------
@@ -245,9 +299,8 @@ export function buildXlsx(data) {
     'Payment account names and numbers are personal data. Share this file only with people who need it.',
   ].forEach((t, i) => sheetDef.addRow([i === 0 ? { v: t, s: 'bold' } : { v: t, s: 'wrap' }]));
 
-  return buildWorkbook([
-    sheetTx, sheetOrd, sheetAudit, sheetProd,
-    periodSheet('By Day', 'Period Start', days), periodSheet('By Week', 'Week Start (Mon)', weeks), periodSheet('By Month', 'Month Start', months),
-    sheetDef,
-  ]);
+  // Revision 12: every column wide enough for its heading and its values, so nothing runs into the next column.
+  const periods = [periodSheet('By Day', 'Period Start', days), periodSheet('By Week', 'Week Start (Mon)', weeks), periodSheet('By Month', 'Month Start', months)];
+  for (const s of [sheetTx, sheetOrd, sheetAudit, sheetProd, ...periods]) s.fitColumns({ max: 45 });
+  return buildWorkbook([sheetTx, sheetOrd, sheetAudit, sheetProd, ...periods, sheetDef]);
 }

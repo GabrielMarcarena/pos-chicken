@@ -3,7 +3,7 @@ import { loadConfig } from './src/config.js';
 import { openDb } from './src/db.js';
 import { createApp } from './src/app.js';
 import { bootstrapAdmin } from './src/services/users.js';
-import { seedStarterCatalog } from './src/services/catalog.js';
+import { seedStarterCatalog, seedRevision11Products } from './src/services/catalog.js';
 
 const config = loadConfig();
 const db = openDb(config.dbPath);
@@ -24,6 +24,9 @@ if (created === null) {
 
 // First run only: the service prices and the other products the shop named (prices for those are set by the admin).
 if (seedStarterCatalog(db)) console.log('Added the starter service prices and other products. Set their prices in Products.');
+// Revision 11, once: Brown Cull Chicken, Ducks and Catfish, without prices (the admin sets them in Products).
+const added = seedRevision11Products(db);
+if (added.length) console.log(`Added ${added.join(', ')}. They stay hidden from the cashier until the admin sets their prices in Products.`);
 
 const server = createApp({ db, config }).listen(config.port, () => {
   console.log(`Chicken POS is running at http://localhost:${config.port}  (database: ${config.dbPath})`);

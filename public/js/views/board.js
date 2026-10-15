@@ -8,16 +8,17 @@
 //   * The star bookmarks an order so it is easy to find again. The bookmark is saved on the order itself.
 //   * Sorting and the "Bookmarked only" filter only change what is shown, never the orders.
 import { api } from '../api.js';
-import { $, $$, esc, formatPeso, formatKg, formatThousandths, toast, errorBox, confirmDialog, prepChips } from '../util.js';
+import { $, $$, esc, formatPeso, formatKg, toast, errorBox, confirmDialog, prepChips, otherQtyText } from '../util.js';
 import { FULFILLMENT, FULFILLMENT_LABELS, FULFILLMENT_HINTS, PAYMENT_METHODS, DISCOUNT_REASONS } from '/shared/constants.js';
 import { SORTS, DEFAULT_SORT, sortOrders, customerName, timeOf } from '/shared/boardSort.js';
+import { formatDateMDY } from '/shared/inventory.js';
 import { openDetail } from './orders.js';
 
 const ICONS = { ONGOING: '⏳', STANDBY: '🛍️', COMPLETE: '✅' };
 const MENU_TEXT = { ONGOING: 'Move to Ongoing', STANDBY: 'Move to Standby', COMPLETE: 'Mark as Complete' };
-const COMPLETE_WINDOWS = [['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['all', 'All dates']];
 const REFRESH_MS = 20_000;
 const SORT_KEY = 'pos.orderList.sort';
+const ZOOM_KEY = 'pos.orderList.zoomedOut';
 
 // The sort choice is a harmless convenience, so it is remembered in this browser. If the browser will not store it, it is
 // simply remembered until the page is closed.
@@ -26,10 +27,15 @@ function savedSort() {
 }
 function rememberSort(value) { try { localStorage.setItem(SORT_KEY, value); } catch { /* not stored; fine */ } }
 
+// Zoom out shows the board smaller so more orders fit on the screen without scrolling. It changes only how big things are drawn, never
+// an order. Like the sort, it is a harmless convenience: remembered in this browser if the browser allows it.
+function savedZoom() { try { return localStorage.getItem(ZOOM_KEY) === '1'; } catch { return false; } }
+function rememberZoom(on) { try { localStorage.setItem(ZOOM_KEY, on ? '1' : '0'); } catch { /* not stored; fine */ } }
+
 const view = {
   root: null,
   orders: [],            // the cards on the board, one entry per order id
-  completeDays: '7',     // how far back the Complete column looks (remembered while the app stays open)
+  zoomedOut: savedZoom(), // true = the board is drawn smaller (Zoom out); false = normal size
   sort: savedSort(),     // one of SORTS; applied inside every column
   filter: 'all',         // 'all' or 'bookmarked'; deliberately not remembered across a reload, so orders never seem to go missing
   expanded: new Set(),   // order ids whose card is open (cards start folded)
@@ -53,7 +59,6 @@ export async function mountBoard(root) {
   view.saving.clear();
   view.marking.clear();
   view.expanded.clear();   // every visit starts with folded cards
-  const windows = COMPLETE_WINDOWS.map(([v, t]) => `<option value="${v}" ${view.completeDays === v ? 'selected' : ''}>${esc(t)}</option>`).join('');
   const sorts = SORTS.map(([v, t]) => `<option value="${v}" ${view.sort === v ? 'selected' : ''}>${esc(t)}</option>`).join('');
   root.innerHTML = `
     <div class="panel board-panel">
@@ -67,19 +72,20 @@ export async function mountBoard(root) {
               <button type="button" class="seg-btn" data-filter="bookmarked" aria-pressed="${view.filter === 'bookmarked'}"><span aria-hidden="true">★</span> Bookmarked <span class="seg-count" id="markCount">0</span></button>
             </div>
           </div>
-          <div class="field board-window"><label for="completeDays">Show completed orders from</label><select id="completeDays">${windows}</select></div>
+          <button type="button" class="btn btn--small" id="boardZoom" aria-pressed="${view.zoomedOut}" title="Show the board smaller so more orders fit on the screen">${view.zoomedOut ? 'Normal size' : 'Zoom out'}</button>
           <button type="button" class="btn btn--small" id="boardRefresh">Refresh</button>
         </div>
       </div>
       <p class="muted">Tap a card to open or fold it. Drag a card to another column, or right-click it (on a phone or tablet, tap <strong>Move</strong>) to change its status.
-        Tap the star to bookmark an order. Mark an order <strong>Complete</strong> only when the customer has received it.</p>
+        Tap the star to bookmark an order. Mark an order <strong>Complete</strong> only when the customer has received it.
+        Complete orders leave this list when the day is closed; Standby orders stay until they are claimed.</p>
       <div id="boardNote" aria-live="polite"></div>
       <div id="boardFilterNote" aria-live="polite"></div>
     </div>
-    <div id="boardBody" class="board-wrap"><p class="muted"><span class="spinner" aria-hidden="true"></span> Loading the Order List...</p></div>
+    <div id="boardBody" class="board-wrap${view.zoomedOut ? ' board-wrap--zoomed' : ''}"><p class="muted"><span class="spinner" aria-hidden="true"></span> Loading the Order List...</p></div>
     <p class="sr" id="boardLive" role="status" aria-live="polite"></p>`;
 
-  $('#completeDays').onchange = (e) => { view.completeDays = e.target.value; load({ showSpinner: true }); };
+  $('#boardZoom').onclick = toggleZoom;
   $('#boardSort').onchange = (e) => { view.sort = e.target.value; rememberSort(view.sort); render(); announce(`Sorted by ${SORTS.find(([k]) => k === view.sort)?.[1] ?? ''}.`); };
   $('#boardRefresh').onclick = () => load({ showSpinner: true });
   root.onclick = onClick;
@@ -94,13 +100,22 @@ export async function mountBoard(root) {
   startPolling();
 }
 
+function toggleZoom() {
+  view.zoomedOut = !view.zoomedOut;
+  rememberZoom(view.zoomedOut);
+  $('#boardBody')?.classList.toggle('board-wrap--zoomed', view.zoomedOut);
+  const btn = $('#boardZoom');
+  if (btn) { btn.textContent = view.zoomedOut ? 'Normal size' : 'Zoom out'; btn.setAttribute('aria-pressed', String(view.zoomedOut)); }
+  announce(view.zoomedOut ? 'Order List zoomed out.' : 'Order List at normal size.');
+}
+
 // ---- Loading the saved statuses ------------------------------------------------------------------
 
 async function load({ showSpinner = false } = {}) {
   if (!view.root?.isConnected) return;
   const rev = view.rev;
   try {
-    const board = await api('GET', `/api/board?complete_days=${encodeURIComponent(view.completeDays)}`);
+    const board = await api('GET', '/api/board');
     // Ignore an answer that arrives after the person moved on, after a card was moved, or while a card is being dragged or saved.
     if (!view.root?.isConnected) return;
     if (view.dragId || view.saving.size || view.marking.size || rev !== view.rev) return;
@@ -147,8 +162,14 @@ function lineList(o) {
     })),
     ...o.other_items.map((i) => ({
       name: i.name,
-      qty: `${i.sold_by === 'PER_KG' ? formatThousandths(i.quantity_milli) : String(i.quantity_milli / 1000)} ${i.unit}`,
+      qty: otherQtyText(i),
       chips: [],
+    })),
+    // Revision 12: Katay / Dead chicken from the ref
+    ...(o.ref_items ?? []).map((i) => ({
+      name: i.name,
+      qty: `${i.heads > 1 ? `${i.heads} heads · ` : ''}${formatKg(i.weight_g)} kg`,
+      chips: ['From the ref'],
     })),
   ];
 }
@@ -214,6 +235,7 @@ function cardHtml(o) {
         <span class="badge badge--${o.fulfillment_status.toLowerCase()}" data-stage="${o.fulfillment_status}">${esc(FULFILLMENT_LABELS[o.fulfillment_status])}</span>
         ${refunded ? '<span class="badge badge--refunded">Refunded</span>' : ''}
         <span class="kcard-date muted">${esc(shortWhen(o.submitted_at))}</span>
+        ${o.from_earlier_day && o.day_date ? `<span class="kcard-earlier" data-earlier title="Sold on an earlier business day and still waiting to be claimed">Sold ${esc(formatDateMDY(o.day_date))}</span>` : ''}
       </span>
       <button type="button" class="btn btn--small kcard-move" data-move-menu="${o.id}" aria-haspopup="menu">Move &#9662;</button>
     </div>
@@ -301,9 +323,13 @@ async function saveMove(id, status) {
     await api('POST', `/api/orders/${id}/fulfillment`, { status });
     view.saving.delete(id);
     view.rev += 1;
+    // A Standby order from an earlier business day leaves the list as soon as it is claimed. It stays saved in Orders and the reports.
+    const leaves = status === 'COMPLETE' && order.from_earlier_day;
+    if (leaves) { view.orders = view.orders.filter((o) => o.id !== id); view.expanded.delete(id); }
     render();
-    announce(`${order.order_number} moved to ${FULFILLMENT_LABELS[status]}.`);
-    toast(`${order.order_number} moved to ${FULFILLMENT_LABELS[status]}.`, 'ok');
+    const text = leaves ? `${order.order_number} is Complete and has left the Order List. It is still saved in Orders.` : `${order.order_number} moved to ${FULFILLMENT_LABELS[status]}.`;
+    announce(text);
+    toast(text, 'ok');
     return true;
   } catch (err) {
     view.saving.delete(id);

@@ -12,6 +12,8 @@ import { loadConfig } from '../src/config.js';
 import { createUser } from '../src/services/users.js';
 import { createProduct, createOtherProduct, seedStarterCatalog, listOtherProducts } from '../src/services/catalog.js';
 import { listBoard } from '../src/services/orders.js';
+import { gatherDaily, buildModel } from '../src/services/dailyReport.js';
+import { gatherExport } from '../src/services/export.js';
 
 let server, base, db;
 const clock = { now: new Date('2026-10-09T02:00:00Z') }; // 10:00 in the Philippines
@@ -37,14 +39,26 @@ function client() {
   };
 }
 
-let admin, manager, cashier, cull, bcull, broilers, eggs, eggDozen, eggPiece, garlic, garlicKg;
+let admin, manager, cashier, cull, bcull, broilers, eggs, eggCarton, eggPiece, garlic, garlicKg;
 let keyN = 0;
 const key = () => `test-key-${++keyN}-${Math.random().toString(36).slice(2)}`;
-// A live chicken (no preparation) and a Po-ur / Dressed line with a cutting choice.
+// A live chicken (no preparation) and a Pour / Dress line with a cutting choice.
 const live = (product, weight, extra = {}) => ({ product_id: product, weight, feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null, ...extra });
 const po = (product, weight, size = 'MEDIUM', extra = {}) => ({ product_id: product, weight, feather: 'POUR', dara: false, cut: 'SLICE', slice_size: size, ...extra });
 const dressed = (product, weight, size = 'MEDIUM', extra = {}) => ({ product_id: product, weight, feather: 'NOT_POUR', dara: false, cut: 'SLICE', slice_size: size, ...extra });
 const other = (option, quantity) => ({ other_product_id: option.product, option_id: option.id, quantity });
+
+// Revision 9: orders are checked against the Daily Inventory, so the tests give every product plenty of stock first.
+// (Tests of the stock rules themselves are in tests/inventory.test.js and use small numbers.)
+async function stockUp(who, amount) {
+  const inv = await who.call('GET', '/api/inventory');
+  assert.equal(inv.status, 200, JSON.stringify(inv.data));
+  for (const row of [...inv.data.chicken, ...inv.data.other]) {
+    if (row.beginning >= amount * 1000) continue;
+    const r = await who.call('PATCH', `/api/inventory/records/${row.id}`, { rev: row.rev, beginning: amount });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  }
+}
 
 before(async () => {
   db = openDb(':memory:');
@@ -54,10 +68,11 @@ before(async () => {
   cull = createProduct(db, a, { name: 'Cull Chicken', price: '58' }).id;
   broilers = createProduct(db, a, { name: 'Broilers', price: '120' }).id;
   bcull = createProduct(db, a, { name: 'Broiler Breeder Cull', price: '52' }).id;
-  const e = createOtherProduct(db, a, { name: 'Eggs (Small)', options: [{ unit: 'dozen', sold_by: 'FIXED', price: '120' }, { unit: 'piece', sold_by: 'FIXED', price: '10' }] });
-  eggs = e.id; eggDozen = { id: e.options.find((o) => o.unit === 'dozen').id, product: eggs }; eggPiece = { id: e.options.find((o) => o.unit === 'piece').id, product: eggs };
-  const g = createOtherProduct(db, a, { name: 'Garlic', options: [{ unit: 'kg', sold_by: 'PER_KG', price: '80' }] });
-  garlic = g.id; garlicKg = { id: g.options[0].id, product: garlic };
+  // Eggs are sold by piece, carton and tray; every other product by piece, pack, sack and kg (revision 10).
+  const e = createOtherProduct(db, a, { name: 'Eggs (Small)', kind: 'EGGS', prices: { carton: '120', piece: '10' } });
+  eggs = e.id; eggCarton = { id: e.options.find((o) => o.unit === 'carton').id, product: eggs }; eggPiece = { id: e.options.find((o) => o.unit === 'piece').id, product: eggs };
+  const g = createOtherProduct(db, a, { name: 'Garlic', kind: 'OTHER', prices: { kg: '80' } });
+  garlic = g.id; garlicKg = { id: g.options.find((o) => o.unit === 'kg').id, product: garlic };
   server = createApp({ db, config, clock: () => clock.now }).listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -65,7 +80,8 @@ before(async () => {
   await admin.login('owner', 'owner-pass-1');
   await manager.login('mgr', 'manager-pass-1');
   await cashier.login('cash', 'cashier-pass-1');
-  // The shop's service prices: Live no fee, Po-ur & Slice (burn chicken) 45, Dressed & Slice (dress chicken) 25.
+  await stockUp(manager, 5000);
+  // The shop's service prices: Live no fee, Pour (burn chicken) 45, Dress (dress chicken) 25.
   assert.equal((await admin.call('PUT', '/api/service-fees/POUR', { amount: '45', basis: 'per_item' })).status, 200);
   assert.equal((await admin.call('PUT', '/api/service-fees/NOT_POUR', { amount: '25', basis: 'per_item' })).status, 200);
 });
@@ -101,23 +117,38 @@ test('all editable prices belong to the admin; managers can add products but not
   assert.equal((await manager.call('PATCH', `/api/products/${added.data.product.id}`, { active: true })).status, 400);
   const priced = await admin.call('PATCH', `/api/products/${added.data.product.id}`, { price: '95', active: true });
   assert.equal(priced.data.product.price_per_kg_centavos, 9500);
-  // other products: a manager can add a product and options, but the options stay inactive until the admin prices them
-  const etag = await manager.call('POST', '/api/other-products', { name: 'Etag (Smoked)', options: [{ unit: 'kg', sold_by: 'PER_KG' }] });
+  // other products: a manager can add a product. It gets all of its ways of selling at once (piece, pack, sack, kg), all inactive until the admin prices them
+  const etag = await manager.call('POST', '/api/other-products', { name: 'Etag (Smoked)', kind: 'OTHER' });
   assert.equal(etag.status, 201, JSON.stringify(etag.data));
-  const opt = etag.data.other_product.options[0];
-  assert.equal(opt.active, false);
-  assert.equal((await manager.call('POST', '/api/other-products', { name: 'Priced by manager', options: [{ unit: 'kg', sold_by: 'PER_KG', price: '5' }] })).status, 403);
-  assert.equal((await manager.call('PATCH', `/api/other-product-options/${eggDozen.id}`, { price: '999' })).status, 403);
+  assert.equal(etag.data.other_product.kind, 'OTHER');
+  assert.deepEqual(etag.data.other_product.options.map((o) => o.unit), ['piece', 'pack', 'sack', 'kg']);
+  assert.ok(etag.data.other_product.options.every((o) => o.active === false && o.price_centavos === 0));
+  assert.deepEqual(etag.data.other_product.options.map((o) => o.sold_by), ['FIXED', 'FIXED', 'FIXED', 'PER_KG']);
+  const opt = etag.data.other_product.options.find((o) => o.unit === 'kg');
+  assert.equal((await manager.call('POST', '/api/other-products', { name: 'Priced by manager', kind: 'OTHER', prices: { kg: '5' } })).status, 403);
+  assert.equal((await manager.call('POST', '/api/other-products', { name: 'Eggs with kg', kind: 'EGGS', prices: { kg: '5' } })).status, 400);   // eggs are not sold by kg
+  assert.equal((await manager.call('POST', '/api/other-products', { name: 'Fruit', kind: 'FRUIT' })).status, 400);
+  const newEggs = await manager.call('POST', '/api/other-products', { name: 'Eggs (Jumbo)', kind: 'EGGS' });
+  assert.equal(newEggs.status, 201);
+  assert.deepEqual(newEggs.data.other_product.options.map((o) => o.unit), ['piece', 'carton', 'tray']);
+  assert.equal((await manager.call('POST', '/api/other-products', { name: 'No kind given' })).data.other_product.kind, 'OTHER');   // the default
+  assert.equal((await manager.call('PATCH', `/api/other-product-options/${eggCarton.id}`, { price: '999' })).status, 403);
   assert.equal((await manager.call('PATCH', `/api/other-product-options/${opt.id}`, { active: true })).status, 400);
   const live = await admin.call('PATCH', `/api/other-product-options/${opt.id}`, { price: '450', active: true });
   assert.equal(live.status, 200);
-  assert.equal(live.data.other_product.options[0].price_centavos, 45000);
+  assert.equal(live.data.other_product.options.find((o) => o.unit === 'kg').price_centavos, 45000);
+  // a unit never changes (stock and saved orders are counted in it)
+  assert.equal((await admin.call('PATCH', `/api/other-product-options/${opt.id}`, { unit: 'pack' })).status, 400);
+  // the admin can price a new product's ways of selling when it is added, and a first price switches the option on
+  const priced2 = await admin.call('POST', '/api/other-products', { name: 'Onion Leeks', kind: 'OTHER', prices: { kg: '90', pack: '25' } });
+  assert.equal(priced2.status, 201);
+  assert.deepEqual(priced2.data.other_product.options.map((o) => [o.unit, o.price_centavos, o.active]), [['piece', 0, false], ['pack', 2500, true], ['sack', 0, false], ['kg', 9000, true]]);
   // a manager may rename and switch products on and off
   assert.equal((await manager.call('PATCH', `/api/other-products/${etag.data.other_product.id}`, { name: 'Etag (Smoked) Special' })).status, 200);
-  // a second way of selling the same product
-  const more = await manager.call('POST', `/api/other-products/${etag.data.other_product.id}/options`, { unit: 'pack', sold_by: 'FIXED' });
-  assert.equal(more.status, 201);
-  assert.equal((await manager.call('POST', `/api/other-products/${etag.data.other_product.id}/options`, { unit: 'pack', sold_by: 'FIXED' })).status, 409);
+  // the ways of selling already exist, so adding one again is refused, and so is a unit outside the product's list
+  assert.equal((await manager.call('POST', `/api/other-products/${etag.data.other_product.id}/options`, { unit: 'pack' })).status, 409);
+  assert.equal((await manager.call('POST', `/api/other-products/${etag.data.other_product.id}/options`, { unit: 'dozen' })).status, 400);
+  assert.equal((await manager.call('POST', `/api/other-products/${newEggs.data.other_product.id}/options`, { unit: 'sack' })).status, 400);
 });
 
 test('the cashier screen only offers products with an active, priced option', async () => {
@@ -126,7 +157,7 @@ test('the cashier screen only offers products with an active, priced option', as
   assert.ok(names.includes('Eggs (Small)') && names.includes('Garlic'));
   assert.ok(!names.some((n) => n.startsWith('Priced by manager')));
   assert.equal(cfg.fees.POUR.amount, 4500);
-  assert.ok(cfg.discount_reasons.SENIOR);
+  assert.ok(cfg.discount_reasons.WHOLESALE && !cfg.discount_reasons.SENIOR);   // Revision 11: Senior citizen and VIP are no longer offered
 });
 
 test('first-run starter data: service prices and the shop\'s other products, all waiting for prices', () => {
@@ -137,11 +168,14 @@ test('first-run starter data: service prices and the shop\'s other products, all
   const fees = Object.fromEntries(fresh.prepare('SELECT code, amount_centavos FROM service_fees').all().map((f) => [f.code, f.amount_centavos]));
   assert.deepEqual([fees.POUR, fees.NOT_POUR], [4500, 2500]);
   const bases = Object.fromEntries(fresh.prepare('SELECT code, basis FROM service_fees').all().map((f) => [f.code, f.basis]));
-  assert.deepEqual([bases.POUR, bases.NOT_POUR, bases.DARA, bases.DUKOT], ['per_head', 'per_head', 'per_head', 'per_head']);   // services are per head
+  assert.deepEqual([bases.POUR, bases.NOT_POUR], ['per_head', 'per_head']);   // services are per head
+  assert.equal(bases.DARA, undefined, 'With Blood and Dukot have no fee any more, so a new install does not even list them');
+  assert.equal(bases.DUKOT, undefined);
   const all = listOtherProducts(fresh, { includeInactive: true });
   assert.deepEqual(all.map((p) => p.name).sort(), ['Eggs (Large)', 'Eggs (Medium)', 'Eggs (Small)', 'Etag (Smoked)', 'Etag (Sun-Dried)', 'Garlic', 'Laya', 'Onions']);
-  const eggUnits = all.find((p) => p.name === 'Eggs (Small)').options.map((o) => o.unit).sort();
-  assert.deepEqual(eggUnits, ['batch', 'dozen', 'piece']);
+  assert.deepEqual(all.find((p) => p.name === 'Eggs (Small)').options.map((o) => o.unit), ['piece', 'carton', 'tray']);
+  assert.deepEqual(all.find((p) => p.name === 'Etag (Sun-Dried)').options.map((o) => o.unit), ['piece', 'pack', 'sack', 'kg']);
+  assert.deepEqual(all.map((p) => [p.name, p.kind]).filter(([, k]) => k === 'EGGS').map(([n]) => n).sort(), ['Eggs (Large)', 'Eggs (Medium)', 'Eggs (Small)']);
   assert.ok(all.every((p) => p.options.every((o) => o.price_centavos === 0 && o.active === false)));
   assert.equal(listOtherProducts(fresh).length, 0); // nothing sellable until the admin sets prices
 });
@@ -154,7 +188,7 @@ test('an old database file is refused with a clear message instead of being dama
   assert.throws(() => openDb(file), /first version/);
 });
 
-test('Cull Chicken 3.6 kg: Live ₱208.80, Po-ur & Slice ₱253.80, Dressed & Slice ₱233.80, and the first order number', async () => {
+test('Cull Chicken 3.6 kg: Live ₱208.80, Pour ₱253.80, Dress ₱233.80, and the first order number', async () => {
   const r = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '3.6', 'MEDIUM', { dara: true })] });
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const o = r.data.order;
@@ -184,7 +218,7 @@ test('several chicken items plus eggs (fixed price) and garlic (per kg) add up c
   const r = await cashier.call('POST', '/api/orders', {
     submission_key: key(), customer_number: 'C-1001',
     items: [live(cull, '3.6'), live(broilers, '2')],
-    other_items: [other(eggDozen, '2'), other(eggPiece, '5'), other(garlicKg, '1.5')],
+    other_items: [other(eggCarton, '2'), other(eggPiece, '5'), other(garlicKg, '1.5')],
   });
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const o = r.data.order;
@@ -192,7 +226,7 @@ test('several chicken items plus eggs (fixed price) and garlic (per kg) add up c
   assert.equal(o.total_centavos, 20880 + 24000 + 24000 + 5000 + 12000);
   assert.equal(o.customer_number, 'C-1001');
   assert.deepEqual(o.items.map((i) => i.line_no).concat(o.other_items.map((i) => i.line_no)), [1, 2, 3, 4, 5]);
-  assert.deepEqual(o.other_items.map((i) => [i.unit, i.sold_by, i.quantity_milli]), [['dozen', 'FIXED', 2000], ['piece', 'FIXED', 5000], ['kg', 'PER_KG', 1500]]);
+  assert.deepEqual(o.other_items.map((i) => [i.unit, i.sold_by, i.quantity_milli]), [['carton', 'FIXED', 2000], ['piece', 'FIXED', 5000], ['kg', 'PER_KG', 1500]]);
 });
 
 test('fixed-price items need whole numbers; per-kg items take decimals; unavailable options are refused', async () => {
@@ -201,13 +235,13 @@ test('fixed-price items need whole numbers; per-kg items take decimals; unavaila
     assert.equal(r.status, 400, JSON.stringify(other_items));
     assert.match(JSON.stringify(r.data), expected);
   };
-  await bad([other(eggDozen, '1.5')], /whole number of dozen/);
-  await bad([other(eggDozen, '0')], /whole number/);
+  await bad([other(eggCarton, '1.5')], /whole number of carton/);
+  await bad([other(eggCarton, '0')], /whole number/);
   await bad([other(garlicKg, '0')], /weight above 0/);
   await bad([other(garlicKg, '1.2345')], /weight above 0/);
-  await bad([{ other_product_id: garlic, option_id: eggDozen.id, quantity: '1' }], /not found/);   // option belongs to another product
+  await bad([{ other_product_id: garlic, option_id: eggCarton.id, quantity: '1' }], /not found/);   // option belongs to another product
   await bad([{ other_product_id: garlic, quantity: '1' }], /not found/);
-  const ok = await cashier.call('POST', '/api/orders', { submission_key: key(), other_items: [other(eggDozen, '3')] });
+  const ok = await cashier.call('POST', '/api/orders', { submission_key: key(), other_items: [other(eggCarton, '3')] });
   assert.equal(ok.status, 201);                                                                    // an order of only other products is fine
   assert.equal(ok.data.order.total_centavos, 36000);
 });
@@ -259,13 +293,13 @@ test('invalid orders are rejected with plain messages', async () => {
   await bad({ items: [live(cull, '-2')] }, /weight/);
   await bad({ items: [live(cull, '')] }, /weight/);
   await bad({ items: [live(cull, '1.2345')] }, /weight/);
-  await bad({ items: [live(cull, '1', { feather: null })] }, /Choose Live/);
+  await bad({ items: [live(cull, '1', { feather: null })] }, /Choose a service/);
   await bad({ items: [po(cull, '1', null)] }, /slice size/);                                      // slice without a size
-  await bad({ items: [{ ...po(cull, '1'), cut: 'NONE', slice_size: null }] }, /slice size or Dukot/); // Po-ur is always sliced or Dukot
-  await bad({ items: [{ ...dressed(cull, '1'), cut: 'NONE', slice_size: null }] }, /slice size or Dukot/);
-  await bad({ items: [{ ...po(cull, '1'), cut: 'DUKOT', slice_size: 'SMALL' }] }, /Dukot cannot have a slice size/);
+  await bad({ items: [{ ...po(cull, '1'), cut: 'NONE', slice_size: 'SMALL' }] }, /not sliced cannot have a slice size/);   // a whole chicken has no slice size
+  await bad({ items: [{ ...po(cull, '1'), cut: 'CHOP', slice_size: null }] }, /cutting option/);
+  await bad({ items: [{ ...po(cull, '1'), cut: 'DUKOT', slice_size: 'SMALL' }] }, /Dukot service is not sliced/);
   await bad({ items: [po(cull, '1', 'GIANT')] }, /slice size/);
-  await bad({ items: [live(cull, '1', { dara: true })] }, /live chicken cannot have Dara/);
+  await bad({ items: [live(cull, '1', { dara: true })] }, /live chicken cannot have With Blood/);
   await bad({ items: [live(cull, '1', { cut: 'DUKOT' })] }, /live chicken has no cutting/);
   await bad({ items: [live(cull, '1', { cut: 'SLICE', slice_size: 'SMALL' })] }, /live chicken has no cutting/);
   await bad({ items: [live(9999, '1')] }, /not found/);
@@ -290,10 +324,10 @@ test('weights above the limit need a confirmation', async () => {
 test('discounts: fixed or percentage, optional, with a reason, and never the whole order', async () => {
   const items = [po(cull, '3.6')]; // subtotal ₱253.80
   const send = (discount, extra = {}) => cashier.call('POST', '/api/orders', { submission_key: key(), items, discount, ...extra });
-  const pct = await send({ type: 'PERCENT', value: '20', reason_code: 'SENIOR' }, { expected_total_centavos: 20304 });
+  const pct = await send({ type: 'PERCENT', value: '20', reason_code: 'WHOLESALE' }, { expected_total_centavos: 20304 });
   assert.equal(pct.status, 201, JSON.stringify(pct.data));
   assert.equal(pct.data.order.subtotal_centavos, 25380);
-  assert.deepEqual([pct.data.order.discount.type, pct.data.order.discount.amount_centavos, pct.data.order.discount.reason_code], ['PERCENT', 5076, 'SENIOR']);
+  assert.deepEqual([pct.data.order.discount.type, pct.data.order.discount.amount_centavos, pct.data.order.discount.reason_code], ['PERCENT', 5076, 'WHOLESALE']);
   assert.equal(pct.data.order.total_centavos, 20304);
   const fixed = await send({ type: 'FIXED', value: '50', reason_code: 'OTHER', note: 'Regular customer' });
   assert.equal(fixed.data.order.total_centavos, 20380);
@@ -303,23 +337,23 @@ test('discounts: fixed or percentage, optional, with a reason, and never the who
   assert.equal(none.data.order.discount.amount_centavos, 0);
   // refusals
   const refused = async (discount, expected) => { const r = await send(discount); assert.equal(r.status, 400, JSON.stringify(discount)); assert.match(JSON.stringify(r.data), expected); };
-  await refused({ type: 'PERCENT', value: '100', reason_code: 'SENIOR' }, /less than the order subtotal/);
-  await refused({ type: 'PERCENT', value: '101', reason_code: 'SENIOR' }, /0% and at most 100%/);
-  await refused({ type: 'PERCENT', value: '0', reason_code: 'SENIOR' }, /above 0%/);
-  await refused({ type: 'FIXED', value: '253.80', reason_code: 'SENIOR' }, /less than the order subtotal/);
-  await refused({ type: 'FIXED', value: '999', reason_code: 'SENIOR' }, /less than the order subtotal/);
-  await refused({ type: 'FIXED', value: '-5', reason_code: 'SENIOR' }, /above ₱0\.00/);
+  await refused({ type: 'PERCENT', value: '100', reason_code: 'WHOLESALE' }, /less than the order subtotal/);
+  await refused({ type: 'PERCENT', value: '101', reason_code: 'WHOLESALE' }, /0% and at most 100%/);
+  await refused({ type: 'PERCENT', value: '0', reason_code: 'WHOLESALE' }, /above 0%/);
+  await refused({ type: 'FIXED', value: '253.80', reason_code: 'WHOLESALE' }, /less than the order subtotal/);
+  await refused({ type: 'FIXED', value: '999', reason_code: 'WHOLESALE' }, /less than the order subtotal/);
+  await refused({ type: 'FIXED', value: '-5', reason_code: 'WHOLESALE' }, /above ₱0\.00/);
   await refused({ type: 'FIXED', value: '10' }, /reason for the discount/);
   await refused({ type: 'FIXED', value: '10', reason_code: 'OTHER' }, /Explain the discount/);
-  await refused({ type: 'BIGSALE', value: '10', reason_code: 'SENIOR' }, /fixed or a percentage/);
+  await refused({ type: 'BIGSALE', value: '10', reason_code: 'WHOLESALE' }, /fixed or a percentage/);
   // the discount applies to the whole order, other products included
-  const mixed = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], other_items: [other(eggDozen, '1')], discount: { type: 'PERCENT', value: '10', reason_code: 'SENIOR' } });
+  const mixed = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], other_items: [other(eggCarton, '1')], discount: { type: 'PERCENT', value: '10', reason_code: 'WHOLESALE' } });
   assert.equal(mixed.data.order.subtotal_centavos, 5800 + 12000);
   assert.equal(mixed.data.order.total_centavos, 17800 - 1780);
 });
 
 test('a refund returns the discounted total, and a discount cannot be edited afterwards', async () => {
-  const o = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [dressed(cull, '2')], discount: { type: 'FIXED', value: '16', reason_code: 'SENIOR' } })).data.order;
+  const o = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [dressed(cull, '2')], discount: { type: 'FIXED', value: '16', reason_code: 'WHOLESALE' } })).data.order;
   assert.equal(o.total_centavos, 11600 + 2500 - 1600);
   const r = await manager.call('POST', `/api/orders/${o.id}/refund`, { reason_code: 'WRONG_PRODUCT' });
   assert.equal(r.data.order.refund_centavos, 12500);
@@ -327,24 +361,24 @@ test('a refund returns the discounted total, and a discount cannot be edited aft
 });
 
 test('service fees and other-product prices can change without touching past orders', async () => {
-  const before = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '3.6')], other_items: [other(eggDozen, '1')] })).data.order;
+  const before = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '3.6')], other_items: [other(eggCarton, '1')] })).data.order;
   assert.equal(before.total_centavos, 25380 + 12000);
   assert.equal((await admin.call('PUT', '/api/service-fees/POUR', { amount: '60', basis: 'per_item' })).status, 200);
-  assert.equal((await admin.call('PATCH', `/api/other-product-options/${eggDozen.id}`, { price: '130' })).status, 200);
+  assert.equal((await admin.call('PATCH', `/api/other-product-options/${eggCarton.id}`, { price: '130' })).status, 200);
   assert.equal((await admin.call('PATCH', `/api/products/${cull}`, { price: '60' })).status, 200);
   const old = (await cashier.call('GET', `/api/orders/${before.id}`)).data.order;
   assert.equal(old.total_centavos, 37380);
   assert.equal(old.items[0].price_per_kg_centavos, 5800);
   assert.equal(old.items[0].service_fee_centavos, 4500);
   assert.equal(old.other_items[0].unit_price_centavos, 12000);
-  const fresh = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '1')], other_items: [other(eggDozen, '1')] })).data.order;
+  const fresh = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '1')], other_items: [other(eggCarton, '1')] })).data.order;
   assert.equal(fresh.total_centavos, 6000 + 6000 + 13000);
   await admin.call('PUT', '/api/service-fees/POUR', { amount: '45', basis: 'per_item' });
-  await admin.call('PATCH', `/api/other-product-options/${eggDozen.id}`, { price: '120' });
+  await admin.call('PATCH', `/api/other-product-options/${eggCarton.id}`, { price: '120' });
   await admin.call('PATCH', `/api/products/${cull}`, { price: '58' });
   const history = (await admin.call('GET', '/api/price-history')).data.history;
   assert.ok(history.some((h) => h.kind === 'SERVICE_FEE' && h.subject === 'POUR' && h.old_value === 4500 && h.new_value === 6000));
-  assert.ok(history.some((h) => h.kind === 'OTHER_PRICE' && h.subject_name === 'Eggs (Small) (dozen)' && h.new_value === 13000));
+  assert.ok(history.some((h) => h.kind === 'OTHER_PRICE' && h.subject_name === 'Eggs (Small) (carton)' && h.new_value === 13000));
   assert.ok(history.some((h) => h.kind === 'CHICKEN_PRICE' && h.old_value === 5800 && h.new_value === 6000));
 });
 
@@ -362,7 +396,7 @@ test('payment details are saved; cashiers see account details masked, managers s
   const seen = (await manager.call('GET', `/api/orders/${r.data.order.id}`)).data.order.payments[0];
   assert.equal(seen.account_number, '09171234567');
   assert.equal(seen.account_name, 'Juan Dela Cruz');
-  const cash = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], payment: { method: 'CASH', amount: '60', account_number: '123' } });
+  const cash = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], payment: { method: 'CASH', amount: '58', received: '100', account_number: '123' } });
   assert.equal(cash.data.order.payments[0].account_number, null);
 });
 
@@ -392,9 +426,9 @@ test('refund is for managers, is its own status, and keeps the original order', 
 });
 
 test('change = void and replace, linked both ways; the discount can be carried over', async () => {
-  const o = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '3.0')], discount: { type: 'PERCENT', value: '20', reason_code: 'SENIOR' } })).data.order;
+  const o = (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [po(cull, '3.0')], discount: { type: 'PERCENT', value: '20', reason_code: 'WHOLESALE' } })).data.order;
   const r = await cashier.call('POST', `/api/orders/${o.id}/change`, {
-    submission_key: key(), reason_code: 'WRONG_WEIGHT', items: [po(cull, '3.6')], discount: { type: 'PERCENT', value: '20', reason_code: 'SENIOR' },
+    submission_key: key(), reason_code: 'WRONG_WEIGHT', items: [po(cull, '3.6')], discount: { type: 'PERCENT', value: '20', reason_code: 'WHOLESALE' },
   });
   assert.equal(r.status, 201, JSON.stringify(r.data));
   const replacement = r.data.order;
@@ -489,8 +523,8 @@ test('daily report: the paper form, filled in with what the app knows (per-head 
     const o1 = await ca.call('POST', '/api/orders', { submission_key: key(), customer_number: 'C-7001', items: [po(bcull, '5.4', 'MEDIUM', { heads: 3 })] });
     const o2 = await ca.call('POST', '/api/orders', {
       submission_key: key(), customer_number: 'Aling Rosa', items: [dressed(cull, '3.6', 'LARGE'), live(broilers, '2.2', { heads: 2 })],
-      other_items: [other(eggDozen, '2'), other(eggPiece, '5'), other(garlicKg, '0.5')],
-      payment: { method: 'GCASH', amount: '800', account_name: 'Juan Dela Cruz', account_number: '09171234567' },
+      other_items: [other(eggCarton, '2'), other(eggPiece, '5'), other(garlicKg, '0.5')],
+      payment: { method: 'GCASH', account_name: 'Juan Dela Cruz', account_number: '09171234567' },
     });
     const o3 = await ca.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')] });                     // will be canceled
     // manager: one more order, then a refund
@@ -499,44 +533,47 @@ test('daily report: the paper form, filled in with what the app knows (per-head 
     assert.equal((await ca.call('POST', `/api/orders/${o3.data.order.id}/cancel`, { reason_code: 'CUSTOMER_CHANGED_MIND' })).status, 200);
     assert.equal((await mg.call('POST', `/api/orders/${o4.data.order.id}/refund`, { reason_code: 'CUSTOMER_NOT_SATISFIED' })).status, 200);
 
-    const read = async (who, query = '') => (await who.call('GET', `/api/daily-report.csv?date=${day}${query}`)).data.toString('utf8').replace(/^\ufeff/, '').trim().split('\r\n');
-    const rows = await read(mg);
-    const [head, ...lines] = rows;
-    const col = (name) => head.split(',').indexOf(name);
-    assert.deepEqual(head.split(',').slice(0, 6), ['Date', 'Time', 'Order Number', 'Cashier', "Customer's #/Name", 'Section']);
+    // Revision 11: the report is Excel only ("Download Daily Report"); the CSV (one row per sale line) is gone. The data behind it is checked here.
+    assert.equal((await mg.call('GET', `/api/daily-report.csv?date=${day}`)).status, 404);
+    // Revision 11: the report date is the BUSINESS DAY the orders were counted on. Nobody closed the day these tests sell on, so the
+    // orders placed "on 1 November" still belong to that open business day, and the report for 1 November has none of them.
+    assert.equal(gatherDaily(db, { date: day }).orderCount, 0);
+    const bday = db.prepare('SELECT d.business_date AS d FROM orders o JOIN business_days d ON d.id = o.business_day_id WHERE o.id = ?').get(o1.data.order.id).d;
+    const ours = new Set([o1, o2, o3, o4].map((r) => r.data.order.order_number));
+    const full = gatherDaily(db, { date: bday });
+    const data = { ...full, chicken: full.chicken.filter((l) => ours.has(l.order)), other: full.other.filter((l) => ours.has(l.order)) };   // this test's orders only
+    const lines = [...data.chicken, ...data.other];
     // canceled order is not listed; the refunded one is, and is marked
-    assert.ok(!lines.some((l) => l.includes(o3.data.order.order_number)));
-    assert.ok(lines.some((l) => l.includes(o4.data.order.order_number) && l.endsWith(',Refunded')));
-    // 3 heads of B-cull: 5.4 kg x 52 = 280.80, service 3 x 45 = 135, amount 415.80
-    const bc = lines.find((l) => l.includes('C-7001'));
-    const c = bc.split(',');
-    assert.deepEqual([c[col('Section')], c[col('# of Heads')], c[col('Kilos or Quantity')], c[col('Price (per kg or per unit)')], c[col('Service')], c[col('Price (kilos x price)')], c[col('Amount')]],
-      ['B-CULL', '3', '5.4', '52.00', '135.00', '280.80', '415.80']);
-    // other products: eggs go to the EGGS section in their own units, garlic to OTHERS
-    const sections = lines.filter((l) => l.includes('Aling Rosa')).map((l) => `${l.split(',')[col('Section')]}:${l.split(',')[col('Product')]}:${l.split(',')[col('Kilos or Quantity')]} ${l.split(',')[col('Unit')]}`);
-    assert.deepEqual(sections.sort(), ['BROILER:Broilers:2.2 kg', 'CULL:Cull Chicken:3.6 kg', 'EGGS:Eggs (Small):2 dozen', 'EGGS:Eggs (Small):5 piece', 'OTHERS:Garlic:0.5 kg']);
-    // no payment details anywhere in the report
-    const everything = rows.join('\n');
-    assert.ok(!/GCash|GCASH|Juan|09171234567/.test(everything));
-
-    // a cashier only ever gets their own sales, even if they ask for someone else
-    const mine = await read(ca, '&cashier=999');
-    assert.ok(mine.slice(1).length > 0 && mine.slice(1).every((l) => l.split(',')[col('Cashier')] === 'Cashier'));
-    assert.ok(!mine.some((l) => l.includes(o4.data.order.order_number)));
+    assert.ok(!lines.some((l) => l.order === o3.data.order.order_number));
+    assert.ok(lines.some((l) => l.order === o4.data.order.order_number && l.refunded));
+    // 3 heads of B-cull: 5.4 kg x 52 = 280.80, service 3 x 45 = 135, amount 415.80, in the B-CULL block (its category)
+    const model = buildModel(data);
+    const bc = model.blocks.find((b) => b.title === 'B-CULL').lines.find((l) => l.customer === 'C-7001');
+    assert.deepEqual([bc.heads, bc.kilos, bc.price, bc.service, bc.weightAmount, bc.amount], [3, 5.4, 5200, 13500, 28080, 41580]);
+    // the other chicken lines of Aling Rosa land in CULL and BROILER; eggs in their own units under EGGS; garlic (0.5 kg, 1 piece) under OTHERS
+    const blockOf = (customer) => model.blocks.flatMap((b) => b.lines.filter((l) => l.customer === customer).map((l) => `${b.title}:${l.product}:${l.kilos} kg`));
+    assert.deepEqual(blockOf('Aling Rosa').sort(), ['BROILER:Broilers:2.2 kg', 'CULL:Cull Chicken:3.6 kg']);
+    assert.equal(model.eggRows.find((r) => r.size === 'Sm.').sold, '2 carton + 5 piece');
+    assert.deepEqual(model.otherRows.map((r) => [r.product, r.sold]), [['Garlic', '1.5 kg (2 pcs)']]);
+    // a cashier only ever gets their own sales, even if they ask for someone else (the route decides who the report is for)
+    const cashierSheet = readZip((await ca.call('GET', `/api/daily-report.xlsx?date=${bday}&cashier=999`)).data)['xl/worksheets/sheet1.xml'];
+    assert.match(cashierSheet, /CASHIER: Cashier</);
     // a manager can pick one cashier
     const managerId = (await mg.call('GET', '/api/me')).data.user.id;
-    const onlyManager = await read(mg, `&cashier=${managerId}`);
-    assert.ok(onlyManager.slice(1).every((l) => l.split(',')[col('Cashier')] === 'Manager'));
-    assert.equal(onlyManager.length - 1, 2);            // the manager's one order has two lines: chicken and garlic
+    const onlyManager = gatherDaily(db, { date: bday, cashierId: managerId });
+    assert.equal([...onlyManager.chicken, ...onlyManager.other].filter((l) => ours.has(l.order)).length, 2);   // the manager's one order here has two lines: chicken and garlic
+    assert.ok([...onlyManager.chicken, ...onlyManager.other].every((l) => l.cashier === 'Manager'));
+    assert.match(readZip((await mg.call('GET', `/api/daily-report.xlsx?date=${bday}&cashier=${managerId}`)).data)['xl/worksheets/sheet1.xml'], /CASHIER: Manager</);
 
     // the Excel file: laid out like the form, landscape, with the right numbers
-    const res = await ad.call('GET', `/api/daily-report.xlsx?date=${day}`);
+    const res = await ad.call('GET', `/api/daily-report.xlsx?date=${bday}`);
     assert.equal(res.status, 200);
-    assert.match(res.headers.get('content-disposition'), /daily-sales-report_2026-11-01\.xlsx/);
+    assert.match(res.headers.get('content-disposition'), new RegExp(`daily-sales-report_${bday}\\.xlsx`));
     const files = readZip(res.data);
     const sheet = files['xl/worksheets/sheet1.xml'];
     assert.match(files['xl/workbook.xml'], /name="Daily Sales Report"/);
-    for (const text of ['DAILY SALES REPORT', 'B-CULL', 'Chicken Balance', 'Additional', 'EXPENSES', 'OTHER COLLECTIONS', 'CASH BREAKDOWN', 'GROSS SALES', 'NET SALES', 'EXCESS/LOSS', 'EGGS', 'OTHERS']) assert.ok(sheet.includes(text), `missing ${text}`);
+    for (const text of ['DAILY SALES REPORT', 'B-CULL', 'Chicken Balance', 'Additional', 'EXPENSES', 'DISCOUNTS', 'TOTAL DISCOUNTS', 'CASH BREAKDOWN', 'GROSS SALES', 'NET SALES', 'EXCESS/LOSS', 'EGGS', 'OTHERS']) assert.ok(sheet.includes(text), `missing ${text}`);
+    assert.ok(!sheet.includes('OTHER COLLECTIONS'), 'Other collections was replaced by the discount list');
     assert.match(sheet, /<mergeCell ref=/);
     assert.match(sheet, /orientation="landscape"/);
     assert.match(sheet, /fitToWidth="1"/);
@@ -545,8 +582,8 @@ test('daily report: the paper form, filled in with what the app knows (per-head 
     assert.match(sheet, /<v>415\.8<\/v>/);
     assert.match(files['xl/worksheets/sheet2.xml'], /Left empty on purpose/);
     // an unknown or missing date means today; the report needs a signed-in user
-    assert.equal((await ca.call('GET', '/api/daily-report.csv?date=not-a-date')).status, 200);
-    assert.equal((await client().call('GET', `/api/daily-report.csv?date=${day}`)).status, 401);
+    assert.equal((await ca.call('GET', '/api/daily-report.xlsx?date=not-a-date')).status, 200);
+    assert.equal((await client().call('GET', `/api/daily-report.xlsx?date=${day}`)).status, 401);
     // the cashier list for the filter is for managers
     assert.equal((await ca.call('GET', '/api/staff')).status, 403);
     assert.ok((await mg.call('GET', '/api/staff')).data.staff.some((u) => u.display_name === 'Cashier'));
@@ -577,39 +614,37 @@ function readZip(buf) {
   return files;
 }
 
-test('CSV export: required fields, service names, other-product units, discounts, and the order total only once', async () => {
+test('CSV export (Revision 11): exactly the shop\'s 18 report columns, in order, sold orders only, the order total only once', async () => {
   const res = await manager.call('GET', '/api/export.csv?from=2026-10-09&to=2026-10-09');
   assert.equal(res.status, 200);
   const text = res.data.toString('utf8').replace(/^\ufeff/, '');
   const [head, ...rows] = text.trim().split('\r\n');
-  for (const col of ['Transaction Date', 'Transaction Time', 'Customer Number', 'Order Number', 'Product Name', 'Product ID', 'Unit Price (₱)',
-    'Quantity (kg for chicken)', 'Unit', 'Service', 'Dara', 'Cutting Method', 'Igorot Slice Size', 'Item Total (₱)', 'Order Total (₱)',
-    'Status', 'Reason', 'Cashier or User', 'Payment Method', 'Payment Account Name', 'Payment Account Number', 'Order Subtotal (₱)', 'Discount (₱)', 'Discount Reason', 'Number of Heads']) {
-    assert.ok(head.includes(col), `missing column ${col}`);
-  }
+  assert.deepEqual(head.split(','), ['Transaction Date', 'Order Number', 'Cashier or User', 'Customer Number', 'Product Name', 'Number of Heads',
+    'Quantity (kg for chicken)', 'Unit', 'Unit Price (\u20b1)', 'Service', 'Service Fees (\u20b1)', 'Item Total (\u20b1)',
+    'Order Subtotal (\u20b1)', 'Discount (\u20b1)', 'Discount Reason', 'Order Total (\u20b1)', 'Payment Method', 'Amount Paid (\u20b1)']);
   const cols = head.split(',');
   const idx = (name) => cols.indexOf(name);
   const first = rows.find((r) => r.includes('ORD-20261009-001'));
-  assert.match(first, /Cull Chicken,CH-001,58,3\.6,kg,Po-ur & Slice \(burn chicken\),Yes,Slice,Medium pieces,45,253\.8/);
+  assert.match(first, /^2026-10-09,ORD-20261009-001,Cashier,WALK-IN,Cull Chicken,1,3\.6,kg,58\.00,Po-ur & Slice,45\.00,253\.80,/);
   const multi = rows.filter((r) => r.includes('ORD-20261009-00') && r.includes('C-1001'));
   assert.equal(multi.length, 5);
-  const totals = multi.map((r) => r.split(',')[idx('Order Total (₱)')]);
-  assert.deepEqual(totals, ['858.8', '', '', '', '']);
-  assert.ok(multi.some((r) => r.includes('Eggs (Small),OP-001,120,2,dozen')));
-  assert.ok(multi.some((r) => r.includes('Garlic,OP-002,80,1.5,kg')));
-  const discounted = rows.find((r) => r.includes('Senior citizen (20%)'));
+  assert.deepEqual(multi.map((r) => r.split(',')[idx('Order Total (\u20b1)')]), ['858.80', '', '', '', '']);   // once per order
+  assert.ok(multi.some((r) => r.includes('Eggs (Small),,2,carton,120.00,')));
+  assert.ok(multi.some((r) => r.includes('Garlic,1,1.5,kg,80.00,')));   // a per-kg line shows its pieces under Number of Heads
+  const discounted = rows.find((r) => r.includes('Wholesale (20%)'));
   assert.ok(discounted, 'a discounted order is in the export');
   const dcols = discounted.split(',');
-  assert.equal(dcols[idx('Order Subtotal (₱)')], '253.8');
-  assert.equal(dcols[idx('Discount (₱)')], '50.76');
-  assert.equal(dcols[idx('Order Total (₱)')], '203.04');
-  const canceled = rows.find((r) => r.includes('CANCELED'));
-  assert.match(canceled, /Customer left without paying/);
-  const heads = rows.find((r) => r.includes('Broiler Breeder Cull') && r.includes(',5.4,kg,Live'));
+  assert.deepEqual([dcols[idx('Order Subtotal (\u20b1)')], dcols[idx('Discount (\u20b1)')], dcols[idx('Order Total (\u20b1)')]], ['253.80', '50.76', '203.04']);
+  // only sold orders: canceled and replaced orders stay in the Excel file (marked), not in this report
+  const all = gatherExport(db, { from: '2026-10-09', to: '2026-10-09' });
+  for (const o of all.orderRows.filter((x) => x.status === 'CANCELED' || x.status === 'REPLACED')) assert.ok(!text.includes(`${o.number},`), `${o.number} is not in the CSV`);
+  const heads = rows.find((r) => r.includes('Broiler Breeder Cull') && r.includes(',5.4,kg,'));
   assert.ok(heads, 'the heads order is in the export');
   assert.equal(heads.split(',')[idx('Number of Heads')], '3');
   assert.equal(heads.split(',')[idx('Quantity (kg for chicken)')], '5.4');                  // the combined weight
-  assert.equal(multi.map((r) => r.split(',')[idx('Number of Heads')]).filter(Boolean).length, 2);   // chicken lines show heads, other products do not
+  // sorted by date, then order number
+  const keys = rows.map((r) => r.split(',').slice(0, 2).join(' '));
+  assert.deepEqual(keys, [...keys].sort());
 });
 
 test('XLSX export: red rows for canceled orders, status text, formulas, discounts and filters', async () => {
@@ -624,19 +659,23 @@ test('XLSX export: red rows for canceled orders, status text, formulas, discount
   assert.match(tx, /dxfId="0"/);
   assert.match(tx, /<autoFilter ref="A1:AI/);
   assert.match(tx, />CANCELED</);
-  assert.match(tx, /Po-ur &amp; Slice \(burn chicken\)/);
+  assert.match(tx, />Po-ur &amp; Slice</);
   assert.match(files['xl/styles.xml'], /FFFFC7CE/);
   assert.match(files['xl/worksheets/sheet5.xml'], /SUMIFS/);
   assert.match(files['xl/worksheets/sheet2.xml'], /Discount Reason/);
 });
 
 test('export keeps canceled orders out of sales totals', async () => {
+  // The Excel file keeps every order and says which ones count as a sale; the CSV holds only orders that count as a sale.
+  const data = gatherExport(db, {});
+  assert.ok(['CANCELED', 'REFUNDED', 'REPLACED'].every((s) => data.orderRows.some((o) => o.status === s)));
+  const files = readZip((await manager.call('GET', '/api/export.xlsx')).data);
+  assert.match(files['xl/worksheets/sheet1.xml'], /Counts as Sale/);
   const csv = (await manager.call('GET', '/api/export.csv')).data.toString('utf8');
-  assert.ok(csv.includes('CANCELED') && csv.includes('REFUNDED') && csv.includes('REPLACED'));
-  const lines = csv.split('\r\n').filter((l) => l.includes(',CANCELED,') || l.includes(',REPLACED,'));
-  assert.ok(lines.length >= 2);
-  const col = csv.split('\r\n')[0].split(',').indexOf('Counts as Sale');
-  assert.ok(lines.every((l) => l.split(',')[col] === 'No'));
+  for (const o of data.orderRows) {
+    const sold = o.status === 'COMPLETED' || o.status === 'REFUNDED' || o.status === 'PARTIALLY_REFUNDED';
+    assert.equal(csv.includes(`,${o.number},`), sold, `${o.number} (${o.status})`);
+  }
 });
 
 // ---- Revision 5/6: payments (as in Version 4), new discount reasons, Order List (Kanban board) ------------------------------------
@@ -658,8 +697,12 @@ test('payments behave exactly as in Version 4: Not recorded saves no payment, ev
     const o = await placed({ method }, method);
     assert.deepEqual([o.payments.length, o.payments[0].method, o.payments[0].amount_centavos], [1, method, 5800]);
   }
-  // an amount typed by the cashier is kept as typed (a mismatch with the total is allowed; the screen only warns)
-  assert.equal((await placed({ method: 'CASH', amount: '100' }, 'typed amount')).payments[0].amount_centavos, 10000);
+  // Revision 9: the amount paid must be the order total. Less is "Insufficient payment", more is refused, so a saved payment always matches the order.
+  assert.equal((await placed({ method: 'CASH', amount: '58' }, 'typed amount equal to the total')).payments[0].amount_centavos, 5800);
+  for (const amount of ['100', '57.99']) {
+    const r = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], payment: { method: 'CASH', amount } });
+    assert.equal(r.status, 400, `amount ${amount} on a ₱58.00 order`);
+  }
   // validation from Version 4 is unchanged
   const bad = async (payment, pattern) => {
     const r = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], payment });
@@ -672,11 +715,14 @@ test('payments behave exactly as in Version 4: Not recorded saves no payment, ev
   await bad({ method: 'GCASH', paid_at: 'not a date' }, /date and time/);
 });
 
-test('discount reasons: Bulk Order Discount, Reject, Employee Discount and VIP are accepted and shown in the export', async () => {
+test('discount reasons (Revision 11): Bulk Order, Reject, Employee, Wholesale, Dead, Katay and Other; Senior citizen and VIP are gone', async () => {
   const config = (await cashier.call('GET', '/api/config')).data;
-  assert.deepEqual(Object.keys(config.discount_reasons), ['SENIOR', 'BULK', 'REJECT', 'EMPLOYEE', 'VIP', 'OTHER']);
-  assert.deepEqual(['Bulk Order Discount', 'Reject', 'Employee Discount', 'VIP'], ['BULK', 'REJECT', 'EMPLOYEE', 'VIP'].map((c) => config.discount_reasons[c]));
-  for (const [code, label] of [['BULK', 'Bulk Order Discount'], ['REJECT', 'Reject'], ['EMPLOYEE', 'Employee Discount'], ['VIP', 'VIP'], ['SENIOR', 'Senior citizen']]) {
+  assert.deepEqual(Object.keys(config.discount_reasons), ['BULK', 'REJECT', 'EMPLOYEE', 'WHOLESALE', 'DEAD', 'KATAY', 'OTHER']);
+  for (const old of ['SENIOR', 'VIP']) {
+    const r = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '10')], discount: { type: 'PERCENT', value: '10', reason_code: old } });
+    assert.equal(r.status, 400, `${old} is no longer accepted`);
+  }
+  for (const [code, label] of [['BULK', 'Bulk Order Discount'], ['REJECT', 'Reject'], ['EMPLOYEE', 'Employee Discount'], ['WHOLESALE', 'Wholesale'], ['DEAD', 'Dead'], ['KATAY', 'Katay']]) {
     const r = await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '10')], discount: { type: 'PERCENT', value: '10', reason_code: code } });
     assert.equal(r.status, 201, `${code}: ${JSON.stringify(r.data)}`);
     assert.deepEqual([r.data.order.discount.reason_code, r.data.order.discount.amount_centavos, r.data.order.total_centavos], [code, 5800, 52200]);
@@ -698,7 +744,7 @@ const column = (board, status) => board.orders.filter((o) => o.fulfillment_statu
 const submitPlain = async (extra = {}) => (await cashier.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')], ...extra })).data.order;
 
 test('Order List: a new order starts in Ongoing and appears exactly once on the board', async () => {
-  const o = await submitPlain({ customer_number: 'C-77', other_items: [other(eggDozen, '2')] });
+  const o = await submitPlain({ customer_number: 'C-77', other_items: [other(eggCarton, '2')] });
   assert.equal(o.fulfillment_status, 'ONGOING');
   const board = await boardOf();
   assert.deepEqual(board.columns, ['ONGOING', 'STANDBY', 'COMPLETE']);
@@ -706,7 +752,7 @@ test('Order List: a new order starts in Ongoing and appears exactly once on the 
   const card = board.orders.find((x) => x.id === o.id);
   assert.deepEqual([card.fulfillment_status, card.order_number, card.customer_number, card.total_centavos, card.business_date], ['ONGOING', o.order_number, 'C-77', 5800 + 24000, '2026-10-09']);
   assert.deepEqual(card.items.map((i) => [i.name, i.heads, i.weight_g]), [['Cull Chicken', 1, 1000]]);
-  assert.deepEqual(card.other_items.map((i) => [i.name, i.unit, i.quantity_milli]), [['Eggs (Small)', 'dozen', 2000]]);
+  assert.deepEqual(card.other_items.map((i) => [i.name, i.unit, i.quantity_milli]), [['Eggs (Small)', 'carton', 2000]]);
   assert.ok(card.submitted_at && card.cashier_name);
   // no payment account details are on the board
   assert.equal(JSON.stringify(card).includes('account'), false);
@@ -795,25 +841,22 @@ test('Order List: canceled and replaced orders leave the board; refunded orders 
   assert.equal((await cashier.call('POST', `/api/orders/${toRefund.id}/fulfillment`, { status: 'COMPLETE' })).status, 200);
 });
 
-test('Order List: Ongoing and Standby show every open order; Complete shows a recent window that can be widened', async () => {
+test('Order List: Ongoing and Standby show every open order; Complete shows the orders claimed on the open business day', async () => {
   const ongoing = await submitPlain();
   const standby = await submitPlain();
   const done = await submitPlain();
   await cashier.call('POST', `/api/orders/${standby.id}/fulfillment`, { status: 'STANDBY' });
   await cashier.call('POST', `/api/orders/${done.id}/fulfillment`, { status: 'COMPLETE' });
-  // ten days later: the open orders are still there, the claimed one drops out of the default 7-day window but not out of "all"
-  const later = new Date(clock.now.getTime() + 10 * 86400000);
-  const seen = (opts) => listBoard(db, { ...opts, now: later }).orders.map((o) => o.order_number);
-  const week = seen({});
-  assert.ok(week.includes(ongoing.order_number) && week.includes(standby.order_number), 'open orders never age out');
-  assert.equal(week.includes(done.order_number), false);
-  assert.ok(seen({ completeDays: 'all' }).includes(done.order_number));
-  assert.ok(seen({ completeDays: '30' }).includes(done.order_number));
-  assert.ok(listBoard(db, { now: clock.now }).orders.some((o) => o.order_number === done.order_number), 'today it is visible');
-  // the API takes the same setting
-  assert.ok((await boardOf(cashier, '?complete_days=all')).orders.some((o) => o.order_number === done.order_number));
-  assert.equal((await boardOf(cashier, '?complete_days=all')).complete_days, 'all');
-  assert.equal((await boardOf(cashier, '?complete_days=junk')).complete_days, 7);                                          // nonsense falls back to the default
+  // ten days later the open orders are still there, and so is the claimed one: its business day is still open (nobody has closed it)
+  const board = listBoard(db);
+  const column = (o) => board.orders.find((x) => x.order_number === o.order_number)?.fulfillment_status;
+  assert.deepEqual([column(ongoing), column(standby), column(done)], ['ONGOING', 'STANDBY', 'COMPLETE']);
+  assert.match(board.open_day, /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(board.orders.every((o) => o.from_earlier_day === false), 'everything here was sold on the open business day');
+  // the old "show completed orders from" setting is gone: the API ignores it and says nothing about it
+  const same = await boardOf(cashier, '?complete_days=1');
+  assert.equal(same.complete_days, undefined);
+  assert.equal(same.orders.length, (await boardOf(cashier, '?complete_days=all')).orders.length);
 });
 
 test('Order List: pickup moves are not sale actions, so the export still shows the real last action', async () => {
@@ -823,11 +866,11 @@ test('Order List: pickup moves are not sale actions, so the export still shows t
   const open = await submitPlain({ customer_number: 'EXPORT-OPEN' });
   await cashier.call('POST', `/api/orders/${open.id}/fulfillment`, { status: 'STANDBY' });
   await cashier.call('POST', `/api/orders/${open.id}/fulfillment`, { status: 'COMPLETE' });
-  const csv = (await manager.call('GET', '/api/export.csv')).data.toString('utf8').split('\r\n');
-  const head = csv[0].split(',');
-  const row = (number) => csv.find((l) => l.includes(number)).split(',');
-  assert.equal(row(open.order_number)[head.indexOf('Action Type')], '', 'moves do not count as a last action');
-  assert.equal(row(o.order_number)[head.indexOf('Action Type')], 'Canceled');
+  // (The Action Type column is in the Excel file; the Revision 11 CSV has only the report columns.)
+  const tx = gatherExport(db, {}).tx;
+  const row = (number) => tx.find((l) => l.number === number);
+  assert.equal(row(open.order_number).action, '', 'moves do not count as a last action');
+  assert.equal(row(o.order_number).action, 'Canceled');
   // ...but the audit log sheet records every move
   const files = readZip((await manager.call('GET', '/api/export.xlsx')).data);
   const audit = Object.entries(files).filter(([name]) => name.startsWith('xl/worksheets/sheet')).map(([, xml]) => xml).join('\n');
@@ -958,7 +1001,7 @@ test('bookmarks: asking twice for the same state is harmless (a double click or 
 });
 
 test('bookmarks: only the flag changes. Status, pickup status, lines, totals, payment and the audit trail stay exactly as they were', async () => {
-  const o = await submitPlain({ payment: { method: 'GCASH', amount: '58', account_name: 'Juan Dela Cruz', account_number: '09171234567', reference: 'REF 9' }, other_items: [other(eggDozen, '1')] });
+  const o = await submitPlain({ payment: { method: 'GCASH', account_name: 'Juan Dela Cruz', account_number: '09171234567', reference: 'REF 9' }, other_items: [other(eggCarton, '1')] });
   const before = { order: (await admin.call('GET', `/api/orders/${o.id}`)).data, row: sameSaleData(o.id), payments: db.prepare('SELECT * FROM payments WHERE order_id = ?').all(o.id), items: db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(o.id), events: db.prepare('SELECT * FROM order_events WHERE order_id = ?').all(o.id) };
   await bookmark(cashier, o.id, true);
   const after = { order: (await admin.call('GET', `/api/orders/${o.id}`)).data, row: sameSaleData(o.id), payments: db.prepare('SELECT * FROM payments WHERE order_id = ?').all(o.id), items: db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(o.id), events: db.prepare('SELECT * FROM order_events WHERE order_id = ?').all(o.id) };
@@ -1024,13 +1067,13 @@ test('Order List cards carry what the expanded card shows (items, discount, paym
   const o = await submitPlain({
     items: [live(cull, '1.5'), po(bcull, '2')], other_items: [other(garlicKg, '0.5')],
     discount: { type: 'FIXED', value: '20', reason_code: 'BULK' },
-    payment: { method: 'GCASH', amount: '100', account_name: 'Juan Dela Cruz', account_number: '09171234567', reference: 'REF 77' },
+    payment: { method: 'GCASH', account_name: 'Juan Dela Cruz', account_number: '09171234567', reference: 'REF 77' },
   });
   const card = await cardOf(o.id);
   assert.equal(card.items.length, 2);
   assert.equal(card.other_items.length, 1);
   assert.deepEqual([card.subtotal_centavos - card.discount_centavos, card.discount_reason], [card.total_centavos, 'BULK']);
-  assert.deepEqual(card.payments.map((p) => [p.method, p.amount_centavos, p.reference]), [['GCASH', 10000, 'REF 77']]);
+  assert.deepEqual(card.payments.map((p) => [p.method, p.amount_centavos, p.reference]), [['GCASH', card.total_centavos, 'REF 77']]);
   assert.ok(!JSON.stringify(card).includes('09171234567') && !JSON.stringify(card).includes('Juan'), 'no account name or number on the board');
   const none = await cardOf((await submitPlain()).id);
   assert.deepEqual(none.payments, []);
@@ -1116,7 +1159,7 @@ test('delete account: an account with orders, payments and audit records is clos
   assert.equal((await admin.call('GET', `/api/orders/${placed.id}`)).data.order.payments[0].recorded_by_name, u.display_name);
   assert.ok((await boardOf(admin, '?complete_days=all')).orders.some((o) => o.id === placed.id), 'the order is still on the Order List');
   assert.equal((await admin.call('GET', '/api/export.csv')).status, 200, 'exports still work');
-  assert.equal((await manager.call('GET', '/api/daily-report.csv?date=2026-10-09')).status, 200);
+  assert.equal((await manager.call('GET', '/api/daily-report.xlsx?date=2026-10-09')).status, 200);
   // cannot sign in, old session is dead, cannot be edited or brought back, username stays reserved
   assert.equal((await mine.call('GET', '/api/config')).status, 401);
   assert.equal((await client().call('POST', '/api/login', { username: u.username, password: u.password })).status, 401);

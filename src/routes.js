@@ -6,11 +6,16 @@ import {
 } from './services/users.js';
 import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
-  createOption, updateOption, getFeeConfig, updateFee, listPriceHistory,
+  createOption, updateOption, getFeeConfig, updateFee, listPriceHistory, setProductImage, removeProductImage, getProductImage,
 } from './services/catalog.js';
 import { createOrder, getOrder, listOrders, listBoard, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
-import { gatherExport, buildXlsx, buildCsv } from './services/export.js';
-import { gatherDaily, buildDailyXlsx, buildDailyCsv } from './services/dailyReport.js';
+import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
+import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
+import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef } from './services/inventory.js';
+import { submitInventory, submissionFile, closeAndSubmit, closedDayExport } from './services/inventoryReport.js';
+import { refSummary } from './services/refStock.js';
+import { dayMoney, saveCashCount, addExpenses, removeExpense } from './services/cashbook.js';
+import { CHICKEN_CATEGORIES, REF_LABELS } from '../shared/constants.js';
 import { toBusinessDate } from './time.js';
 
 export const COOKIE_NAME = 'pos_session';
@@ -56,10 +61,14 @@ export function registerRoutes(r) {
     reasons: REASONS,
     payment_methods: PAYMENT_METHODS,
     discount_reasons: DISCOUNT_REASONS,
+    chicken_categories: CHICKEN_CATEGORIES,
+    ref_labels: REF_LABELS,
     fulfillment_labels: FULFILLMENT_LABELS,
     products: listProducts(ctx.db),
     other_products: listOtherProducts(ctx.db),
     large_weight_kg: ctx.config.largeWeightKg,
+    // How many heads / units can still be sold on the open business day. The server checks it again when the order is saved.
+    stock: stockSummary(ctx.db, ctx.now()),
   }));
 
   // ---- Catalog (manager and admin) ----
@@ -72,9 +81,54 @@ export function registerRoutes(r) {
   // A product can be sold in several ways (per piece, per dozen, per kg ...). Managers add them; only the admin sets prices.
   r.add('POST', '/api/other-products/:id/options', 'manager', (ctx) => created({ other_product: createOption(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()) }));
   r.add('PATCH', '/api/other-product-options/:id', 'manager', (ctx) => ({ other_product: updateOption(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()) }));
+  // Product pictures for the New order cards (Revision 11). :kind is chicken or other. Everyone signed in sees them; managers and the admin change them.
+  r.add('GET', '/api/product-images/:kind/:id', 'cashier', (ctx) => {
+    const img = getProductImage(ctx.db, ctx.params.kind, idParam(ctx));
+    return { __raw: { headers: { 'Content-Type': img.mime, 'Cache-Control': 'private, max-age=86400' }, body: img.body } };
+  });
+  r.add('PUT', '/api/product-images/:kind/:id', 'manager', (ctx) => setProductImage(ctx.db, ctx.user, ctx.params.kind, idParam(ctx), ctx.body, ctx.now()));
+  r.add('DELETE', '/api/product-images/:kind/:id', 'manager', (ctx) => removeProductImage(ctx.db, ctx.user, ctx.params.kind, idParam(ctx)));
   r.add('GET', '/api/service-fees', 'manager', (ctx) => ({ fees: getFeeConfig(ctx.db) }));
   r.add('PUT', '/api/service-fees/:code', 'admin', (ctx) => ({ fees: updateFee(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
   r.add('GET', '/api/price-history', 'admin', (ctx) => ({ history: listPriceHistory(ctx.db) }));
+
+  // ---- Daily Inventory ----
+  // Everyone signed in can look and export. Typing numbers in and starting a new business day are for managers and the admin; the server checks it.
+  const dateQuery = (ctx) => {
+    const d = ctx.query.date;
+    if (d === undefined || d === '') return undefined;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new HttpError(400, 'The business date must look like 2026-10-12.', 'VALIDATION');
+    return d;
+  };
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const dir = (ctx) => ({ dir: inventoryDir(ctx.config) });
+  r.add('GET', '/api/inventory', 'cashier', (ctx) => getInventory(ctx.db, ctx.user, { date: dateQuery(ctx) }, ctx.now()));
+  r.add('PATCH', '/api/inventory/records/:id', 'manager', (ctx) => updateRecord(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()));
+  // Submit Inventory Today (Revision 11): saves today's inventory file on this computer and records it; the screen then downloads it.
+  r.add('POST', '/api/inventory/submit', 'manager', (ctx) => created(submitInventory(ctx.db, ctx.user, ctx.body, ctx.now(), dir(ctx))));
+  r.add('GET', '/api/inventory/submissions/:id/file', 'cashier', (ctx) => {
+    const file = submissionFile(ctx.db, idParam(ctx), dir(ctx).dir);
+    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${file.name}"` }, body: file.body } };
+  });
+  // Closed Inventory Today and Reset the Day. Revision 12: with submit: true (what the screen sends) the inventory is submitted and the day
+  // closed in ONE step. Without it, the Revision 11 rule applies: the day's inventory must already be submitted with its final numbers.
+  r.add('GET', '/api/inventory/close-check', 'manager', (ctx) => closeCheck(ctx.db, ctx.user, ctx.now(), { ...dir(ctx), submitting: ctx.query.submit === '1' }));
+  r.add('POST', '/api/inventory/close-day', 'manager', (ctx) => (ctx.body?.submit === true
+    ? closeAndSubmit(ctx.db, ctx.user, ctx.body, ctx.now(), dir(ctx))
+    : startNewDay(ctx.db, ctx.user, ctx.body, ctx.now(), dir(ctx))));
+  // Export (Revision 12, beside "Closed"): one closed business day in the layout of the submitted file. Read-only; everyone signed in.
+  r.add('GET', '/api/inventory/day.xlsx', 'cashier', (ctx) => {
+    const file = closedDayExport(ctx.db, ctx.user, dateQuery(ctx), ctx.now());
+    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${file.name}"` }, body: file.body } };
+  });
+
+  // ---- Advanced (Revision 12, on the New order screen): ref stock, cash breakdown, expenses. Everyone signed in. ----
+  r.add('GET', '/api/advanced', 'cashier', (ctx) => ({ ref: refSummary(ctx.db), money: dayMoney(ctx.db, ctx.user, {}, ctx.now()) }));
+  // Store a Katay or Dead chicken in the ref: it is also added to that chicken's Katay or Dead on the Daily Inventory.
+  r.add('POST', '/api/ref/store', 'cashier', (ctx) => created(storeInRef(ctx.db, ctx.user, ctx.body, ctx.now())));
+  r.add('POST', '/api/cash-count', 'cashier', (ctx) => created(saveCashCount(ctx.db, ctx.user, ctx.body, ctx.now())));
+  r.add('POST', '/api/expenses', 'cashier', (ctx) => created(addExpenses(ctx.db, ctx.user, ctx.body, ctx.now())));
+  r.add('POST', '/api/expenses/:id/remove', 'cashier', (ctx) => removeExpense(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()));
 
   // ---- Users (admin) ----
   r.add('GET', '/api/users', 'admin', (ctx) => ({ users: listUsers(ctx.db, ctx.user) }));
@@ -90,7 +144,7 @@ export function registerRoutes(r) {
   });
   r.add('GET', '/api/orders', 'cashier', (ctx) => ({ orders: listOrders(ctx.db, ctx.query) }));
   // Order List (Kanban board): the latest saved pickup status of every open order, and moving a card.
-  r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db, { completeDays: ctx.query.complete_days, now: ctx.now() }));
+  r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db));
   r.add('POST', '/api/orders/:id/fulfillment', 'cashier', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
   r.add('PUT', '/api/orders/:id/bookmark', 'cashier', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
   r.add('GET', '/api/orders/:id', 'cashier', (ctx) => ({ order: getOrder(ctx.db, idParam(ctx), ctx.user) }));
@@ -101,8 +155,8 @@ export function registerRoutes(r) {
   });
   r.add('POST', '/api/orders/:id/refund', 'manager', (ctx) => ({ order: refundOrder(ctx.db, ctx.user, idParam(ctx), ctx.body, { now: ctx.now() }) }));
 
-  // ---- Daily Sales Report (everyone; a cashier only ever gets their own sales) ----
-  // The report copies the shop's paper form with what the app knows. Counted-by-hand boxes are left empty.
+  // ---- Daily Sales Report, "Download Daily Report" (everyone; a cashier only ever gets their own sales) ----
+  // The report copies the shop's paper form with what the app knows. Counted-by-hand boxes are left empty. Excel only (Revision 11).
   const dailyArgs = (ctx) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(ctx.query.date ?? '') ? ctx.query.date : toBusinessDate(ctx.now());
     const wanted = Number(ctx.query.cashier);
@@ -112,11 +166,7 @@ export function registerRoutes(r) {
   const dailyName = (args, ext) => `daily-sales-report_${args.date}${args.cashierId ? `_cashier-${args.cashierId}` : ''}.${ext}`;
   r.add('GET', '/api/daily-report.xlsx', 'cashier', (ctx) => {
     const args = dailyArgs(ctx);
-    return { __raw: { headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"` }, body: buildDailyXlsx(gatherDaily(ctx.db, args)) } };
-  });
-  r.add('GET', '/api/daily-report.csv', 'cashier', (ctx) => {
-    const args = dailyArgs(ctx);
-    return { __raw: { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${dailyName(args, 'csv')}"` }, body: buildDailyCsv(gatherDaily(ctx.db, args)) } };
+    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"` }, body: buildDailyXlsx(gatherDaily(ctx.db, args)) } };
   });
   // Who can be picked in the report's cashier filter.
   r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active).map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
@@ -130,6 +180,13 @@ export function registerRoutes(r) {
         'Content-Disposition': `attachment; filename="${exportName(ctx, 'xlsx')}"`,
       },
       body: buildXlsx(gatherExport(ctx.db, ctx.query)),
+    },
+  }));
+  // Revision 12: the same columns as the CSV, as an Excel file whose columns are wide enough to read (a CSV cannot store column widths).
+  r.add('GET', '/api/export-sales.xlsx', 'manager', (ctx) => ({
+    __raw: {
+      headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${exportName(ctx, 'xlsx').replace('chicken-pos_', 'chicken-pos-sales-list_')}"` },
+      body: buildSalesListXlsx(gatherExport(ctx.db, ctx.query)),
     },
   }));
   r.add('GET', '/api/export.csv', 'manager', (ctx) => ({

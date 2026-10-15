@@ -31,7 +31,7 @@ export async function api(method, path, body) {
   return data;
 }
 
-/** Download a file (spreadsheet export) while keeping the sign-in cookie. */
+/** Download a file (spreadsheet export) while keeping the sign-in cookie. Returns the file name that was saved. */
 export async function download(path, fallbackName) {
   const res = await fetch(path, { credentials: 'same-origin', headers: { 'X-Requested-With': 'pos' } });
   if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => ({})));
@@ -41,4 +41,5 @@ export async function download(path, fallbackName) {
   a.href = url; a.download = name;
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return name;
 }

@@ -9,6 +9,7 @@ import { loadConfig } from '../src/config.js';
 import { createUser } from '../src/services/users.js';
 import { createOrder } from '../src/services/orders.js';
 import { createProduct, createOtherProduct, updateFee } from '../src/services/catalog.js';
+import { getInventory, updateRecord } from '../src/services/inventory.js';
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -23,10 +24,19 @@ createUser(db, { username: 'cash', display_name: 'Cashier', role: 'cashier', pas
 createProduct(db, admin, { name: 'Cull Chicken', price: '58' });
 createProduct(db, admin, { name: 'Broilers', price: '120' });
 createProduct(db, admin, { name: 'Broiler Breeder Cull', price: '52' });
-createOtherProduct(db, admin, { name: 'Eggs (Small)', options: [{ unit: 'dozen', sold_by: 'FIXED', price: '120' }, { unit: 'piece', sold_by: 'FIXED', price: '10' }] });
-createOtherProduct(db, admin, { name: 'Garlic', options: [{ unit: 'kg', sold_by: 'PER_KG', price: '80' }] });
-updateFee(db, admin, 'POUR', { amount: '45', basis: 'per_item' });   // Po-ur & Slice (burn chicken)
-updateFee(db, admin, 'NOT_POUR', { amount: '25', basis: 'per_item' }); // Dressed & Slice (dress chicken)
+createOtherProduct(db, admin, { name: 'Eggs (Small)', kind: 'EGGS', prices: { carton: '120', piece: '10' } });
+createOtherProduct(db, admin, { name: 'Garlic', kind: 'OTHER', prices: { kg: '80' } });
+updateFee(db, admin, 'POUR', { amount: '45', basis: 'per_item' });   // Pour (burn chicken)
+updateFee(db, admin, 'NOT_POUR', { amount: '25', basis: 'per_item' }); // Dress (dress chicken)
+// Revision 9: orders are checked against the Daily Inventory, so every product starts with plenty of stock. (Stock rules have their own steps below.)
+const setStock = (amounts) => {
+  const inv = getInventory(db, admin, {}, new Date());
+  for (const row of [...inv.chicken, ...inv.other]) {
+    const want = typeof amounts === 'number' ? amounts : amounts[row.name];
+    if (want !== undefined) updateRecord(db, admin, row.id, { rev: row.rev, beginning: want, reason: 'RECOUNT' }, new Date());   // a reason is only asked for when a number is already there
+  }
+};
+setStock(500);
 const server = createApp({ db, config: loadConfig({ dbPath: ':memory:' }) }).listen(0);
 await new Promise((r) => server.once('listening', r));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -69,7 +79,7 @@ async function login(page, user, pass) {
   await page.waitForSelector('#topbar:not([hidden])');
 }
 const on = async (loc) => (await loc.getAttribute('aria-checked')) === 'true';
-const svc = (page, v) => page.locator(`[data-action="prep-feather"][data-v="${v}"]`);
+const svc = (page, v) => page.locator(`[data-action="prep-service"][data-v="${v}"]`);
 const cut = (page, v) => page.locator(`[data-action="prep-cut"][data-v="${v}"]`);
 const dara = (page) => page.locator('[data-action="prep-dara"]');
 const typeKeys = async (page, text) => { for (const ch of text) await page.click(`[data-key="${ch}"]`); };
@@ -95,7 +105,7 @@ await step('3.6 kg at ₱58.00/kg shows ₱208.80 using the number pad; a servic
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱208.80');
   assert.match(await cashier.locator('#sum').innerText(), /₱58\.00\/kg × 3\.6 kg/);
   assert.equal(await cashier.locator('#addBtn').isDisabled(), true);
-  assert.match(await cashier.locator('#hint').innerText(), /Choose Live, Po-ur & Slice or Dressed & Slice/);
+  assert.match(await cashier.locator('#hint').innerText(), /Choose a service: Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot/);
 });
 
 await step('weight is validated and the price follows every change', async () => {
@@ -113,9 +123,14 @@ await step('weight is validated and the price follows every change', async () =>
   await cashier.fill('#amount', '3.6');
 });
 
-await step('the three services show their fee and exclude each other', async () => {
+await step('Revision 10: seven services (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot); the Pour and Dress fees apply to all but Live; one at a time', async () => {
+  const buttons = await cashier.locator('[data-action="prep-service"]').allInnerTexts();
+  assert.deepEqual(buttons.map((t) => t.split('\n')[0]), ['Live', 'Pour', 'Dress', 'Po-ur & Slice', 'Dress & Slice', 'Pour & Dukot', 'Dress & Dukot']);
   const text = await cashier.locator('.service-grid').innerText();
-  assert.match(text, /Live[\s\S]*No fee/); assert.match(text, /Po-ur & Slice[\s\S]*Burn chicken[\s\S]*\+₱45\.00/); assert.match(text, /Dressed & Slice[\s\S]*Dress chicken[\s\S]*\+₱25\.00/);
+  assert.match(text, /Live[\s\S]*No fee/); assert.match(text, /Pour[\s\S]*Burn chicken[\s\S]*\+₱45\.00/); assert.match(text, /Dress[\s\S]*Dress chicken[\s\S]*\+₱25\.00/);
+  for (const v of ['POUR', 'POUR_SLICE', 'POUR_DUKOT']) assert.match(await svc(cashier, v).innerText(), /\+₱45\.00/, `${v} carries the Pour fee`);
+  for (const v of ['NOT_POUR', 'NOT_POUR_SLICE', 'NOT_POUR_DUKOT']) assert.match(await svc(cashier, v).innerText(), /\+₱25\.00/, `${v} carries the Dress fee`);
+  assert.doesNotMatch(text, /Dara/, 'the old name is gone');
   await svc(cashier, 'POUR').click();
   assert.equal(await on(svc(cashier, 'POUR')), true);
   await svc(cashier, 'NOT_POUR').click();
@@ -125,71 +140,98 @@ await step('the three services show their fee and exclude each other', async () 
   await svc(cashier, 'POUR').click();
   assert.equal(await on(svc(cashier, 'POUR')), true);
   assert.equal(await on(svc(cashier, 'NOT_POUR')), false);
+  assert.equal(await cashier.locator('[data-action="prep-service"][aria-checked="true"]').count(), 1, 'exactly one service at a time');
 });
 
-await step('Po-ur & Slice needs a cutting choice: one slice size at a time, or Dukot as the last option', async () => {
-  assert.equal(await cashier.locator('#addBtn').isDisabled(), true, 'cannot add before choosing a slice size or Dukot');
-  assert.match(await cashier.locator('#hint').innerText(), /slice size or Dukot/);
+await step('Revision 10: a plain Pour or Dress is whole (no size asked); only the Slice services ask for a size; the Dukot services ask for none', async () => {
+  // Plain Pour: complete on its own, the slice sizes are switched off.
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), false, 'Pour is complete without a slice size');
+  assert.equal(await cut(cashier, 'SMALL').isDisabled(), true);
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
+  // Po-ur & Slice needs a size.
+  await svc(cashier, 'POUR_SLICE').click();
+  assert.equal(await on(svc(cashier, 'POUR_SLICE')), true);
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), true, 'Po-ur & Slice cannot be added before choosing a slice size');
+  assert.match(await cashier.locator('#hint').innerText(), /Choose a slice size/);
   const labels = await cashier.locator('[data-action="prep-cut"]').allInnerTexts();
-  assert.deepEqual(labels.map((t) => t.split('\n')[0]), ['Small pieces', 'Medium pieces', 'Large pieces', 'Dukot']);
+  assert.deepEqual(labels.map((t) => t.split('\n')[0]), ['Small pieces', 'Medium pieces', 'Large pieces'], 'no stand-alone Dukot in the cutting section');
+  assert.equal(await cut(cashier, 'DUKOT').count(), 0);
   await cut(cashier, 'SMALL').click();
   await cut(cashier, 'MEDIUM').click();
   assert.equal(await on(cut(cashier, 'MEDIUM')), true);
   assert.equal(await on(cut(cashier, 'SMALL')), false);
   assert.equal(await checkedCuts(cashier), 1);
-  await cut(cashier, 'DUKOT').click();
-  assert.equal(await on(cut(cashier, 'DUKOT')), true);
-  assert.equal(await on(cut(cashier, 'MEDIUM')), false);
-  assert.equal(await checkedCuts(cashier), 1);
   assert.equal(await cashier.locator('#addBtn').isDisabled(), false);
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
+  // Dress & Slice keeps the size that was chosen.
+  await svc(cashier, 'NOT_POUR_SLICE').click();
+  assert.equal(await on(cut(cashier, 'MEDIUM')), true);
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱233.80');
+  // The Dukot services are complete without a size; the size is cleared and the sizes are switched off.
+  await svc(cashier, 'POUR_DUKOT').click();
+  assert.equal(await checkedCuts(cashier), 0, 'a Dukot service has no slice size');
+  assert.equal(await cut(cashier, 'MEDIUM').isDisabled(), true);
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), false, 'Pour & Dukot is complete on its own');
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
+  await svc(cashier, 'NOT_POUR_DUKOT').click();
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), false);
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱233.80');
+  // Plain Dress is whole.
+  await svc(cashier, 'NOT_POUR').click();
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), false, 'Dress is complete without a slice size');
+  assert.equal(await checkedCuts(cashier), 0);
+  // Back to Po-ur & Slice: a size is needed again.
+  await svc(cashier, 'POUR_SLICE').click();
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), true);
   await cut(cashier, 'MEDIUM').click();
-  assert.equal(await checkedCuts(cashier), 1);
 });
 
-await step('prices: Po-ur & Slice ₱253.80, Dressed & Slice ₱233.80, Live ₱208.80; Dara and the slice size do not change it', async () => {
+await step('prices: Po-ur & Slice ₱253.80, Dress & Slice ₱233.80, Live ₱208.80; With Blood and the slice size do not change it', async () => {
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
-  assert.match(await cashier.locator('#sum').innerText(), /Po-ur & Slice[\s\S]*\+₱45\.00/);
+  assert.match(await cashier.locator('#sum').innerText(), /Pour[\s\S]*\+₱45\.00/);
+  assert.match(await cashier.locator('#cutting legend').innerText(), /Slice size/);
+  assert.match(await cashier.locator('#prep').innerText(), /With Blood/);
+  assert.doesNotMatch(await cashier.locator('#prep').innerText(), /Dara/);
   await dara(cashier).click();
   assert.equal(await on(dara(cashier)), true);
-  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80', 'With Blood has no fee');
   await cut(cashier, 'LARGE').click();
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱253.80');
-  await svc(cashier, 'NOT_POUR').click();
+  await svc(cashier, 'NOT_POUR_SLICE').click();
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱233.80');
-  assert.equal(await on(dara(cashier)), true, 'changing the service did not reset Dara');
-  assert.equal(await on(cut(cashier, 'LARGE')), true, 'changing the service did not reset the cutting choice');
+  assert.equal(await on(dara(cashier)), true, 'changing the service did not reset With Blood');
+  assert.equal(await on(cut(cashier, 'LARGE')), true, 'changing the service did not reset the slice size');
   await cashier.screenshot({ path: '/tmp/shots/2-configure.png' });
 });
 
-await step('choosing Live clears and disables Dara and cutting, and leaving Live does not bring them back', async () => {
+await step('choosing Live clears and disables With Blood and cutting, and leaving Live does not bring them back', async () => {
   await svc(cashier, 'LIVE').click();
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱208.80');
   assert.equal(await dara(cashier).isDisabled(), true);
   assert.equal(await cut(cashier, 'SMALL').isDisabled(), true);
-  assert.equal(await cut(cashier, 'DUKOT').isDisabled(), true);
   assert.equal(await on(dara(cashier)), false);
   assert.equal(await checkedCuts(cashier), 0);
   assert.equal(await cashier.locator('#addBtn').isDisabled(), false, 'Live is valid on its own');
-  await svc(cashier, 'POUR').click();
+  await svc(cashier, 'POUR_SLICE').click();
   assert.equal(await on(dara(cashier)), false);
   assert.equal(await checkedCuts(cashier), 0);
-  assert.equal(await cashier.locator('#addBtn').isDisabled(), true, 'needs a cutting choice again');
+  assert.equal(await cashier.locator('#addBtn').isDisabled(), true, 'needs a slice size again');
   await dara(cashier).click();
   await cut(cashier, 'MEDIUM').click();
 });
 
-await step('add the item: the order panel shows weight, price, service, slice size and the fee', async () => {
+await step('add the item: the order panel shows weight, price, service, With Blood, slice size and the fee', async () => {
   await cashier.click('#addBtn');
   const panel = await cashier.locator('#orderPanel').innerText();
   assert.match(panel, /Cull Chicken/); assert.match(panel, /₱253\.80/); assert.match(panel, /3\.6 kg × ₱58\.00\/kg/);
-  assert.match(panel, /Po-ur & Slice/); assert.match(panel, /Dara/); assert.match(panel, /Medium pieces/); assert.match(panel, /\+₱45\.00 Po-ur & Slice/);
+  assert.match(panel, /Po-ur & Slice/); assert.match(panel, /With Blood/); assert.doesNotMatch(panel, /Dara/); assert.match(panel, /Medium pieces/); assert.match(panel, /\+₱45\.00 Pour/);
   assert.equal(await cashier.locator('#orderTotal').innerText(), '₱253.80');
 });
 
-await step('a second chicken line (Dressed & Slice, large) has its own price; the total adds up', async () => {
+await step('a second chicken line (Dress, large) has its own price; the total adds up', async () => {
   await cashier.click('.product-card:has-text("Broilers")');
   await cashier.fill('#amount', '2');
-  await svc(cashier, 'NOT_POUR').click();
+  await svc(cashier, 'NOT_POUR_SLICE').click();
   await cut(cashier, 'LARGE').click();
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱265.00');
   await cashier.click('#addBtn');
@@ -199,20 +241,21 @@ await step('a second chicken line (Dressed & Slice, large) has its own price; th
 await step('other products: eggs show every way they are sold; fixed prices take whole numbers', async () => {
   await cashier.click('[data-tab="other"]');
   const grid = await cashier.locator('.product-grid').innerText();
-  assert.match(grid, /Eggs \(Small\)[\s\S]*₱120\.00\/dozen[\s\S]*₱10\.00\/piece/); assert.match(grid, /Garlic[\s\S]*₱80\.00\/kg/);
+  assert.match(grid, /Eggs \(Small\)[\s\S]*₱10\.00\/piece[\s\S]*₱120\.00\/carton/); assert.doesNotMatch(grid, /\/tray/, 'a unit with no price is not sold'); assert.match(grid, /Garlic[\s\S]*₱80\.00\/kg/);
   await cashier.fill('#otherSearch', 'gar');
   assert.equal(await cashier.locator('.product-card').count(), 1);
   await cashier.fill('#otherSearch', '');
   await cashier.click('.product-card:has-text("Eggs (Small)")');
-  assert.equal(await cashier.locator('[data-key="."]').isDisabled(), true, 'no decimal point for dozens');
+  await cashier.locator('[data-action="pick-option"]:has-text("Per carton")').click();
+  assert.equal(await cashier.locator('[data-key="."]').isDisabled(), true, 'no decimal point for cartons');
   await typeKeys(cashier, '2');
-  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱240.00');           // 2 dozen at ₱120
+  assert.equal(await cashier.locator('#itemTotal').innerText(), '₱240.00');           // 2 carton at ₱120
   await cashier.locator('[data-action="pick-option"]:has-text("Per piece")').click();
   assert.equal(await cashier.inputValue('#amount'), '2');
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱20.00');            // 2 pieces at ₱10
   await cashier.fill('#amount', '2.5');
   assert.equal(await cashier.inputValue('#amount'), '25', 'a decimal point is not accepted for pieces');
-  await cashier.locator('[data-action="pick-option"]:has-text("Per dozen")').click();
+  await cashier.locator('[data-action="pick-option"]:has-text("Per carton")').click();
   await cashier.fill('#amount', '2');
   await cashier.screenshot({ path: '/tmp/shots/3-eggs.png' });
   await cashier.click('#addBtn');
@@ -233,7 +276,7 @@ await step('other products: a per-kg item takes a weight with decimals', async (
 await step('editing a line updates only that line', async () => {
   await cashier.locator('[data-action="edit-line"][data-kind="chicken"]').first().click();
   assert.equal(await cashier.inputValue('#amount'), '3.6');
-  assert.equal(await on(svc(cashier, 'POUR')), true);
+  assert.equal(await on(svc(cashier, 'POUR_SLICE')), true);
   assert.equal(await on(cut(cashier, 'MEDIUM')), true);
   await cashier.fill('#amount', '3');
   await cashier.click('#addBtn');
@@ -242,7 +285,7 @@ await step('editing a line updates only that line', async () => {
   assert.match(await lines.nth(0).innerText(), /3\.0 kg × ₱58\.00\/kg/);
   assert.match(await lines.nth(0).innerText(), /₱219\.00/);
   assert.match(await lines.nth(1).innerText(), /Broilers[\s\S]*₱265\.00/);
-  assert.match(await lines.nth(2).innerText(), /Eggs \(Small\)[\s\S]*₱240\.00[\s\S]*2 dozen × ₱120\.00\/dozen/);
+  assert.match(await lines.nth(2).innerText(), /Eggs \(Small\)[\s\S]*₱240\.00[\s\S]*2 carton × ₱120\.00\/carton/);
   assert.match(await lines.nth(3).innerText(), /Garlic[\s\S]*₱120\.00[\s\S]*1\.5 kg × ₱80\.00\/kg/);
   assert.equal(await cashier.locator('#orderTotal').innerText(), '₱844.00');
 });
@@ -284,17 +327,22 @@ await step('discount is optional: percentage or fixed, needs a reason, and can n
   assert.equal(await cashier.locator('#payMethod').inputValue(), 'NONE');
   assert.equal(await cashier.locator('#payAmount').count(), 0, 'no amount box while the payment is not recorded');
   assert.equal(await cashier.locator('#payWarn').innerText(), '');
-  assert.match(await cashier.locator('#payPanel').innerText(), /does not charge anyone and does not replace the official receipt/);
+  assert.match(await cashier.locator('#payPanel').innerText(), /This only records what you type for billing\. It does not charge anyone\./);
+  assert.doesNotMatch(await cashier.locator('#payPanel').innerText(), /official receipt/i, 'the old sentence about the official receipt is gone');
   // Cash: method + amount (starts at the order total). GCash adds date and time, account name, account number and reference number.
   await cashier.selectOption('#payMethod', 'CASH');
   assert.equal(await cashier.locator('#payAmount').count(), 1);
   assert.equal(await cashier.locator('#payWhen, #payName, #payNumber, #payRef').count(), 0, 'cash has no account fields');
+  assert.deepEqual(await cashier.locator('#payPanel label').allInnerTexts().then((t) => t.map((x) => x.replace(/\s+/g, ' ').trim())),
+    ['How did the customer pay?', 'Amount Paid (₱)', 'Money Received (₱)', 'Change (₱)']);
   await cashier.selectOption('#payMethod', 'GCASH');
   assert.equal(await cashier.locator('#payAmount').count(), 1);
+  assert.equal(await cashier.locator('#payReceived, #payChange').count(), 0, 'GCash has no cash calculator');
   assert.deepEqual(await cashier.locator('#payPanel label').allInnerTexts().then((t) => t.map((x) => x.replace(/\s+/g, ' ').trim())),
-    ['How did the customer pay?', 'Amount paid (₱)', 'Payment date and time (optional)', 'Account name (optional)', 'Account or mobile number (optional)', 'Reference number (optional)']);
+    ['How did the customer pay?', 'Amount Paid (₱)', 'Payment date and time (optional)', 'Account name (optional)', 'Account or mobile number (optional)', 'Reference number (optional)']);
   await cashier.selectOption('#payMethod', 'NONE');
   assert.equal(await cashier.locator('#payAmount').count(), 0, 'back to Not recorded: the amount box goes away again');
+  assert.equal(await cashier.locator('#payReceived, #payChange').count(), 0, 'no calculator for Not recorded');
   assert.equal(await cashier.locator('#submitBtn').isDisabled(), false, 'no discount is fine');
   await cashier.selectOption('#discType', 'PERCENT');
   await cashier.fill('#discValue', '20');
@@ -338,13 +386,18 @@ await step('a page refresh keeps the unsent order and its discount', async () =>
   assert.match(await cashier.locator('.plate-note').innerText(), /Subtotal ₱844\.00 − discount ₱168\.80/);
 });
 
-await step('payment details: the amount starts at the discounted total and a mismatch is flagged', async () => {
+await step('payment details: the amount starts at the discounted total; below it is "Insufficient payment", above it must match', async () => {
   await cashier.click('[data-action="go-review"]');
   await cashier.selectOption('#payMethod', 'GCASH');
   await cashier.waitForSelector('#payName');
   assert.equal(await cashier.inputValue('#payAmount'), '675.20');
   await cashier.fill('#payAmount', '400');
-  assert.match(await cashier.locator('#payWarn').innerText(), /different from the order total/);
+  assert.match(await cashier.locator('#payWarn').innerText(), /Insufficient payment/);
+  await cashier.check('#reviewed');
+  assert.equal(await cashier.locator('#submitBtn').isDisabled(), true, 'a payment below the amount due cannot be finished as fully paid');
+  await cashier.fill('#payAmount', '800');
+  assert.match(await cashier.locator('#payWarn').innerText(), /more than the order total/);
+  assert.equal(await cashier.locator('#submitBtn').isDisabled(), true);
   await cashier.fill('#payAmount', '675.20');
   assert.equal(await cashier.locator('#payWarn').innerText(), '');
   await cashier.fill('#payName', 'Juan Dela Cruz');
@@ -364,14 +417,14 @@ await step('double-clicking Submit saves exactly one order with every detail', a
   assert.deepEqual([saved[0].feather_prep, saved[0].dara, saved[0].cut_method, saved[0].slice_size, saved[0].weight_g, saved[0].service_fee_centavos, saved[0].line_total_centavos], ['POUR', 1, 'SLICE', 'MEDIUM', 3000, 4500, 21900]);
   assert.deepEqual([saved[1].feather_prep, saved[1].dara, saved[1].cut_method, saved[1].slice_size, saved[1].service_fee_centavos, saved[1].line_total_centavos], ['NOT_POUR', 0, 'SLICE', 'LARGE', 2500, 26500]);
   const others = db.prepare('SELECT * FROM order_other_items ORDER BY line_no').all();
-  assert.deepEqual(others.map((o) => [o.product_name, o.unit, o.sold_by, o.quantity_milli, o.line_total_centavos]), [['Eggs (Small)', 'dozen', 'FIXED', 2000, 24000], ['Garlic', 'kg', 'PER_KG', 1500, 12000]]);
+  assert.deepEqual(others.map((o) => [o.product_name, o.unit, o.sold_by, o.quantity_milli, o.line_total_centavos]), [['Eggs (Small)', 'carton', 'FIXED', 2000, 24000], ['Garlic', 'kg', 'PER_KG', 1500, 12000]]);
   const order = db.prepare('SELECT * FROM orders').get();
   assert.deepEqual([order.subtotal_centavos, order.discount_type, order.discount_value, order.discount_centavos, order.discount_reason, order.total_centavos], [84400, 'PERCENT', 2000, 16880, 'SENIOR', 67520]);
   assert.equal(order.customer_number, 'C-2001');
   const pay = db.prepare('SELECT * FROM payments').get();
   assert.deepEqual([pay.method, pay.amount_centavos, pay.account_name, pay.account_number, pay.reference], ['GCASH', 67520, 'Juan Dela Cruz', '09171234567', 'GC-778']);
   const slip = await cashier.locator('.slip').first().innerText();
-  assert.match(slip, /Not an official receipt/); assert.match(slip, /Discount: Senior citizen \(20%\)/); assert.match(slip, /₱675\.20/);
+  assert.match(slip, /Official Receipt/); assert.doesNotMatch(slip, /Not an official receipt/i); assert.match(slip, /GCash/); assert.match(slip, /Discount: Senior citizen \(20%\)/); assert.match(slip, /₱675\.20/);
   await cashier.screenshot({ path: '/tmp/shots/5-done.png', fullPage: true });
 });
 
@@ -389,8 +442,8 @@ await step('orders: search by number, details show the discount, canceling needs
   await cashier.click('tr.clickable');
   await cashier.waitForSelector('dialog[open] [data-dlg-action]:has-text("Close")');
   const detail = await cashier.locator('dialog').innerText();
-  assert.match(detail, /Po-ur & Slice/); assert.match(detail, /Medium pieces/); assert.match(detail, /Dressed & Slice/); assert.match(detail, /GCash/);
-  assert.match(detail, /2 dozen/); assert.match(detail, /Discount: Senior citizen \(20%\)/);
+  assert.match(detail, /Po-ur & Slice/); assert.match(detail, /Medium pieces/); assert.match(detail, /Dress & Slice/); assert.doesNotMatch(detail, /Dara/); assert.match(detail, /With Blood/); assert.match(detail, /GCash/);
+  assert.match(detail, /2 carton/); assert.match(detail, /Discount: Senior citizen \(20%\)/);
   assert.match(detail, /•••••••4567/, 'cashier sees the account number masked');
   assert.doesNotMatch(detail, /09171234567/);
   assert.equal(await cashier.locator('[data-dlg-action]:has-text("Refund order")').count(), 0, 'cashiers cannot refund');
@@ -412,12 +465,15 @@ await step('change order: loads into checkout and submitting replaces it with a 
   await cashier.click('a[href="#/new"]');
   await cashier.click('.product-card:has-text("Broilers")');
   await cashier.fill('#amount', '1.5');
-  await svc(cashier, 'NOT_POUR').click();
+  await svc(cashier, 'NOT_POUR_SLICE').click();
   await cut(cashier, 'SMALL').click();
   await cashier.click('#addBtn');
   await cashier.click('[data-action="go-review"]');
   await cashier.selectOption('#payMethod', 'CASH');   // the payment method is saved with the order, and copied back when the order is changed
   await cashier.check('#reviewed');
+  assert.equal(await cashier.locator('#submitBtn').isDisabled(), true, 'Cash needs the Money Received before the order can be submitted');
+  await cashier.fill('#payReceived', '500');
+  assert.equal(await cashier.locator('#payChange').innerText(), '₱295.00');   // ₱500.00 received - ₱205.00 due
   await cashier.click('#submitBtn');
   await cashier.waitForSelector('.order-no-big');
   const number = await cashier.locator('.order-no-big').innerText();
@@ -430,12 +486,15 @@ await step('change order: loads into checkout and submitting replaces it with a 
   await cashier.waitForSelector('.change-banner');
   assert.match(await cashier.locator('.change-banner').innerText(), new RegExp(`Changing ${number}`));
   await cashier.locator('[data-action="edit-line"]').first().click();
-  assert.equal(await on(svc(cashier, 'NOT_POUR')), true, 'the service and cutting come back when editing');
+  assert.equal(await on(svc(cashier, 'NOT_POUR_SLICE')), true, 'the service and cutting come back when editing');
   assert.equal(await on(cut(cashier, 'SMALL')), true);
   await cashier.fill('#amount', '2');
   await cashier.click('#addBtn');
   await cashier.click('[data-action="go-review"]');
   assert.equal(await cashier.inputValue('#payMethod'), 'CASH', 'the payment method of the original order is filled in on a change');
+  assert.equal(await cashier.inputValue('#payReceived'), '', 'Money Received is typed again: the total changed');
+  await cashier.fill('#payReceived', '300');
+  assert.equal(await cashier.locator('#payChange').innerText(), '₱35.00');   // ₱300.00 - ₱265.00
   await cashier.check('#reviewed');
   assert.equal(await cashier.locator('#submitBtn').isDisabled(), true, 'a reason is required for a change');
   await cashier.selectOption('#reasonCode', 'WRONG_WEIGHT');
@@ -445,6 +504,88 @@ await step('change order: loads into checkout and submitting replaces it with a 
   assert.match(await cashier.locator('.done').innerText(), new RegExp(`Replaces ${number}`));
   assert.equal(db.prepare('SELECT status FROM orders WHERE order_number = ?').get(number).status, 'REPLACED');
   assert.equal(db.prepare('SELECT total_centavos FROM orders WHERE order_number = ?').get(number.replace('002', '003')).total_centavos, 24000 + 2500);
+  const cash = db.prepare('SELECT p.* FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.order_number = ?').get(number.replace('002', '003'));
+  assert.deepEqual([cash.method, cash.amount_centavos, cash.received_centavos, cash.change_centavos], ['CASH', 26500, 30000, 3500], 'Money Received and Change are saved with the payment');
+  assert.match(await cashier.locator('.slip').first().innerText(), /Money Received[\s\S]*₱300\.00[\s\S]*Change[\s\S]*₱35\.00/);
+});
+
+await step('Revision 9: cash change calculator (₱456.00 paid, ₱1,000.00 received = ₱544.00 change); only for Cash; bad values are handled', async () => {
+  const p = await newPage();
+  try {
+    await login(p, 'cash', 'cashier-pass-1');
+    await p.click('.product-card:has-text("Broilers")');
+    await p.fill('#amount', '3.8');
+    await svc(p, 'LIVE').click();
+    await p.click('#addBtn');
+    assert.equal(await p.locator('#orderTotal').innerText(), '₱456.00');
+    await p.click('[data-action="go-review"]');
+    const change = () => p.locator('#payChange').innerText();
+    const warn = () => p.locator('#payWarn').innerText();
+    // Not for other methods.
+    for (const m of ['NONE', 'GCASH', 'MAYA', 'BANK', 'OTHER']) {
+      await p.selectOption('#payMethod', m);
+      assert.equal(await p.locator('#payReceived, #payChange').count(), 0, `${m} has no calculator`);
+    }
+    await p.selectOption('#payMethod', 'CASH');
+    assert.equal(await p.inputValue('#payAmount'), '456.00');
+    assert.equal(await change(), '—');
+    assert.match(await warn(), /Enter the Money Received/);
+    await p.check('#reviewed');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true, 'blank Money Received blocks submitting');
+    await p.fill('#payReceived', '1000');
+    assert.equal(await change(), '₱544.00');
+    assert.equal(await p.locator('#payWarn').innerText(), '');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), false);
+    await p.screenshot({ path: '/tmp/shots/20-cash-change.png' });
+    await p.fill('#payReceived', '1,000');                                   // thousands comma
+    assert.equal(await change(), '₱544.00');
+    await p.fill('#payReceived', '456');                                     // equal: no change
+    assert.equal(await change(), '₱0.00');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), false);
+    await p.fill('#payReceived', '456.01');
+    assert.equal(await change(), '₱0.01');
+    await p.fill('#payReceived', '455.99');                                  // too little
+    assert.match(await warn(), /^Insufficient payment/);
+    assert.equal(await change(), '—');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true, 'an insufficient payment cannot be finished as fully paid');
+    assert.ok(await p.locator('#payWarn.cfg-hint--bad').count(), 'the warning is styled as a problem');
+    await p.fill('#payReceived', '-5');
+    assert.match(await warn(), /cannot be negative/);
+    assert.equal(await change(), '—');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true);
+    await p.fill('#payReceived', '1.2.3');
+    assert.match(await warn(), /must be an amount/);
+    await p.fill('#payReceived', 'abc');
+    assert.equal(await p.inputValue('#payReceived'), '', 'letters are not accepted in the box');
+    assert.match(await warn(), /Enter the Money Received/);
+    await p.fill('#payReceived', '0');
+    assert.match(await warn(), /above ₱0\.00/);
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true);
+    // Amount Paid below the amount due, or above it.
+    await p.fill('#payReceived', '1000');
+    await p.fill('#payAmount', '400');
+    assert.match(await warn(), /^Insufficient payment/);
+    assert.equal(await change(), '—');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true);
+    await p.fill('#payAmount', '500');
+    assert.match(await warn(), /more than the order total/);
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true);
+    await p.fill('#payAmount', '-456');
+    assert.match(await warn(), /cannot be negative/);
+    await p.fill('#payAmount', '');
+    assert.match(await warn(), /Enter the Amount Paid/);
+    await p.fill('#payAmount', '456.00');
+    assert.equal(await change(), '₱544.00');
+    // Switching to GCash hides the calculator and the stale Money Received cannot leak into the saved payment.
+    await p.selectOption('#payMethod', 'GCASH');
+    assert.equal(await p.locator('#payReceived, #payChange').count(), 0);
+    assert.equal(await p.locator('#submitBtn').isDisabled(), false);
+    await p.selectOption('#payMethod', 'CASH');
+    assert.equal(await p.inputValue('#payReceived'), '', 'Money Received is cleared when the method leaves Cash, so an old figure cannot be saved by mistake');
+    assert.equal(await p.locator('#payChange').innerText(), '—');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true);
+    await p.evaluate(() => sessionStorage.clear());   // nothing is submitted: the draft is thrown away
+  } finally { await p.context().close(); }
 });
 
 await step('number of heads: 3 heads of B-cull weighed together are entered once, priced on the total weight, and saved', async () => {
@@ -473,7 +614,7 @@ await step('number of heads: 3 heads of B-cull weighed together are entered once
   await cashier.fill('#heads', '1000');
   assert.equal(await cashier.inputValue('#heads'), '100', 'at most 3 digits');
   await cashier.fill('#heads', '3');
-  await svc(cashier, 'NOT_POUR').click();
+  await svc(cashier, 'NOT_POUR_SLICE').click();
   await cut(cashier, 'MEDIUM').click();
   assert.equal(await cashier.locator('#itemTotal').innerText(), '₱305.80');           // ₱280.80 + the flat ₱25.00 service
   await cashier.click('#addBtn');
@@ -546,7 +687,7 @@ const createOrderWith = async (page, build) => {
   const ids = {
     cull: db.prepare("SELECT id FROM products WHERE name = 'Cull Chicken'").get().id,
     bcull: db.prepare("SELECT id FROM products WHERE name = 'Broiler Breeder Cull'").get().id,
-    egg: db.prepare("SELECT o.id AS option_id, o.product_id FROM other_product_options o WHERE o.unit = 'dozen' LIMIT 1").get(),
+    egg: db.prepare("SELECT o.id AS option_id, o.product_id FROM other_product_options o WHERE o.unit = 'carton' LIMIT 1").get(),
   };
   const payload = build(ids);
   return page.evaluate(async (body) => {
@@ -1014,7 +1155,7 @@ await step('Order List: cards are compact and folded by default; clicking opens 
   const text = (await card.innerText()).replace(/\s+/g, ' ');
   assert.match(text, new RegExp(rich)); assert.match(text, /Maria Santos/); assert.match(text, /Ongoing/); assert.match(text, /Broiler Breeder Cull 4\.0 kg/); assert.match(text, /\+ 2 more/);
   assert.match(text, /Oct \d+, \d+:\d\d/); assert.match(text, /₱[\d,]+\.\d\d/);
-  assert.ok(!/Garlic|Eggs|REF-4421|Cashier|Payment|Discount|Po-ur/.test(text), 'the folded card leaves the details out');
+  assert.ok(!/Garlic|Eggs|REF-4421|Cashier|Payment|Discount|Pour/.test(text), 'the folded card leaves the details out');
   await cashier.screenshot({ path: '/tmp/shots/20-board-folded.png' });
 
   const before = saleSnapshot();
@@ -1027,7 +1168,7 @@ await step('Order List: cards are compact and folded by default; clicking opens 
   await card.locator('.kcard-detail').waitFor();
   assert.equal(await isOpen(cashier, rich), true);
   const open = (await card.innerText()).replace(/\s+/g, ' ');
-  for (const part of [/Customer Maria Santos/, /Ordered Oct/, /Broiler Breeder Cull 4\.0 kg/, /Po-ur & Slice/, /Small pieces/, /Cull Chicken 2\.0 kg/, /Live/, /Eggs \(Small\)/, /2 dozen/, /Subtotal ₱/, /Discount −₱20\.00 \(Bulk Order Discount\)/, /Total ₱/, /Payment GCash ₱[\d,.]+ · Ref REF-4421/, /Cashier Cashier/, /Move/, /Details/, /Show less/]) {
+  for (const part of [/Customer Maria Santos/, /Ordered Oct/, /Broiler Breeder Cull 4\.0 kg/, /Po-ur & Slice/, /Small pieces/, /Cull Chicken 2\.0 kg/, /Live/, /Eggs \(Small\)/, /2 carton/, /Subtotal ₱/, /Discount −₱20\.00 \(Bulk Order Discount\)/, /Total ₱/, /Payment GCash ₱[\d,.]+ · Ref REF-4421/, /Cashier Cashier/, /Move/, /Details/, /Show less/]) {
     assert.match(open, part);
   }
   assert.ok(!/09171234567|Maria S•••/.test(open), 'no payment account details on the board');
@@ -1380,24 +1521,30 @@ await step('daily sales report: a manager can choose one cashier or everyone', a
   await manager.click('a[href="#/products"]');                       // the next step starts on the Products screen
 });
 
-await step('flexible products: a manager adds etag with two ways of selling; prices stay with the admin', async () => {
+await step('Revision 10: a manager adds etag; it gets the fixed units piece, pack, sack and kg at no price, prices stay with the admin', async () => {
   await manager.click('[data-tab="other"]');
   await manager.click('#addOther');
   await manager.fill('#nName', 'Etag (Sun-Dried)');
+  assert.equal(await manager.inputValue('#nKind'), 'OTHER', 'a new product starts as an Other product');
+  assert.deepEqual(await manager.locator('#nPrices label').allInnerTexts(), ['Price per piece (₱)', 'Price per pack (₱)', 'Price per sack (₱)', 'Price per kg (₱)']);
+  for (const i of await manager.locator('#nPrices input').all()) assert.equal(await i.isDisabled(), true, 'a manager cannot type a price');
+  // The type decides the units: Eggs are piece, carton, tray.
+  await manager.selectOption('#nKind', 'EGGS');
+  assert.deepEqual(await manager.locator('#nPrices label').allInnerTexts(), ['Price per piece (₱)', 'Price per carton (₱)', 'Price per tray (₱)']);
+  await manager.selectOption('#nKind', 'OTHER');
   await manager.click('[data-dlg-action]:has-text("Add product")');
-  await manager.waitForSelector('dialog[open] .price-opt[data-new]');            // the options dialog opens right away
-  assert.equal(await manager.locator('dialog [data-f="price"]').first().isDisabled(), true, 'a manager cannot type a price');
-  await manager.selectOption('dialog [data-new] [data-f="sold_by"]', 'PER_KG');
-  assert.equal(await manager.inputValue('dialog [data-new] [data-f="unit"]'), 'kg');
-  await manager.click('dialog [data-save="new"]');
-  await manager.waitForSelector('dialog .price-opt[data-opt]');
-  await manager.fill('dialog [data-new] [data-f="unit"]', 'pack');
-  await manager.click('dialog [data-save="new"]');
-  await manager.waitForFunction(() => document.querySelectorAll('dialog .price-opt[data-opt]').length === 2);
-  await manager.click('[data-dlg-action]:has-text("Done")');
   await manager.waitForSelector('tr:has-text("Etag (Sun-Dried)") .chip');
   const row = await manager.locator('tr:has-text("Etag (Sun-Dried)")').innerText();
-  assert.match(row, /per kg: price not set \(hidden\)/); assert.match(row, /per pack: price not set \(hidden\)/);
+  for (const unit of ['piece', 'pack', 'sack', 'kg']) assert.match(row, new RegExp(`per ${unit}: price not set \\(hidden\\)`));
+  assert.match(row, /Other product/);
+  // The manager sees that the units exist but cannot price them.
+  await manager.locator('tr:has-text("Etag (Sun-Dried)") [data-options]').click();
+  await manager.waitForSelector('dialog .price-opt[data-opt]');
+  assert.deepEqual(await manager.locator('dialog .price-opt[data-opt] .opt-unit').allTextContents(), ['piece', 'pack', 'sack', 'kg']);
+  assert.equal(await manager.locator('dialog [data-f="price"]').first().isDisabled(), true);
+  assert.equal(await manager.locator('dialog [data-new]').count(), 0, 'every standard unit already exists, so there is nothing to add');
+  assert.equal(await manager.locator('dialog [data-f="unit"]').count(), 0, 'a unit cannot be typed or changed');
+  await manager.click('[data-dlg-action]:has-text("Done")');
   await manager.screenshot({ path: '/tmp/shots/7-products.png' });
 });
 
@@ -1409,36 +1556,58 @@ await step('the admin sets the prices and the product appears on the cashier scr
   await adminPage.click('[data-tab="other"]');
   await adminPage.locator('tr:has-text("Etag (Sun-Dried)") [data-options]').click();
   await adminPage.waitForSelector('dialog .price-opt[data-opt]');
-  const rows = adminPage.locator('dialog .price-opt[data-opt]');
-  await rows.nth(0).locator('[data-f="price"]').fill('450');
-  await rows.nth(0).locator('[data-save]').click();
-  await adminPage.waitForFunction(() => document.querySelector('dialog .price-opt[data-opt] [data-f="price"]')?.value === '450.00');
-  const second = adminPage.locator('dialog .price-opt[data-opt]').nth(1);
-  await second.locator('[data-f="price"]').fill('60');
-  await second.locator('[data-save]').click();
-  await adminPage.waitForFunction(() => [...document.querySelectorAll('dialog .price-opt[data-opt] [data-f="price"]')].every((i) => i.value));
+  const unitRow = (u) => adminPage.locator(`dialog .price-opt[data-opt]:has(.opt-unit:text-is("${u}"))`);
+  await unitRow('kg').locator('[data-f="price"]').fill('450');
+  await unitRow('kg').locator('[data-save]').click();
+  await adminPage.waitForFunction(() => [...document.querySelectorAll('dialog .price-opt[data-opt]')].some((r) => r.querySelector('.opt-unit').textContent === 'kg' && r.querySelector('[data-f="price"]').value === '450.00'));
+  await unitRow('pack').locator('[data-f="price"]').fill('60');
+  await unitRow('pack').locator('[data-save]').click();
+  await adminPage.waitForFunction(() => [...document.querySelectorAll('dialog .price-opt[data-opt]')].some((r) => r.querySelector('.opt-unit').textContent === 'pack' && r.querySelector('[data-f="price"]').value === '60.00'));
   await adminPage.click('[data-dlg-action]:has-text("Done")');
   await adminPage.waitForSelector('tr:has-text("Etag (Sun-Dried)"):has-text("₱450.00"):has-text("₱60.00")');
-  assert.match(await adminPage.locator('tr:has-text("Etag (Sun-Dried)")').innerText(), /per kg: ₱450\.00[\s\S]*per pack: ₱60\.00/);
-  // service fees: the admin can change them and sees the shop's wording
+  assert.match(await adminPage.locator('tr:has-text("Etag (Sun-Dried)")').innerText(), /per pack: ₱60\.00[\s\S]*per kg: ₱450\.00/);
+  // service fees: only Pour and Dress; Dara (With Blood) and Dukot no longer carry a fee
   await adminPage.click('[data-tab="fees"]');
   await adminPage.waitForSelector('[data-fee="POUR"]');
   const fees = await adminPage.locator('#tabBody').innerText();
-  assert.match(fees, /Po-ur & Slice \(burn chicken\)/); assert.match(fees, /Dressed & Slice \(dress chicken\)/); assert.match(fees, /Live[\s\S]*never has a fee/);
+  assert.match(fees, /Pour \(burn chicken\)/); assert.match(fees, /Dress \(dress chicken\)/); assert.match(fees, /Live[\s\S]*never has a fee/);
+  assert.equal(await adminPage.locator('[data-fee]').count(), 2, 'only the Pour and Dress fees are listed');
+  assert.equal(await adminPage.locator('[data-fee="DARA"], [data-fee="DUKOT"]').count(), 0);
+  assert.doesNotMatch(await adminPage.locator('#tabBody table').innerText(), /Dara|Dukot|With Blood/);
   assert.equal(await adminPage.inputValue('[data-fee="POUR"]'), '45.00');
   assert.equal(await adminPage.inputValue('[data-fee="NOT_POUR"]'), '25.00');
   await adminPage.screenshot({ path: '/tmp/shots/8-fees.png' });
-  // the cashier screen now offers the new product
+  // the cashier screen now offers the new product (only the priced units)
   await adminPage.click('a[href="#/new"]');
   await adminPage.click('[data-tab="other"]');
-  assert.match(await adminPage.locator('.product-grid').innerText(), /Etag \(Sun-Dried\)[\s\S]*₱450\.00\/kg[\s\S]*₱60\.00\/pack/);
+  const grid = await adminPage.locator('.product-grid').innerText();
+  assert.match(grid, /Etag \(Sun-Dried\)[\s\S]*₱60\.00\/pack[\s\S]*₱450\.00\/kg/);
   await adminPage.click('.product-card:has-text("Etag (Sun-Dried)")');
+  assert.equal(await adminPage.locator('[data-action="pick-option"]').count(), 2, 'only units with a price can be sold');
   await adminPage.locator('[data-action="pick-option"]:has-text("Per pack")').click();
   await adminPage.fill('#amount', '3');
   assert.equal(await adminPage.locator('#itemTotal').innerText(), '₱180.00');
 });
 
-await step('per-head fee: the admin switches Po-ur & Slice to per head and 3 heads pay it three times', async () => {
+await step('Revision 10: the admin adds an Egg product with prices in one step; Eggs get piece, carton and tray', async () => {
+  await adminPage.click('a[href="#/products"]');
+  await adminPage.click('[data-tab="other"]');
+  await adminPage.click('#addOther');
+  await adminPage.fill('#nName', 'Eggs (Large)');
+  await adminPage.selectOption('#nKind', 'EGGS');
+  await adminPage.fill('#pp-piece', '11');
+  await adminPage.fill('#pp-carton', '125');
+  await adminPage.click('[data-dlg-action]:has-text("Add product")');
+  await adminPage.waitForSelector('tr:has-text("Eggs (Large)") .chip');
+  const row = await adminPage.locator('tr:has-text("Eggs (Large)")').innerText();
+  assert.match(row, /Eggs/); assert.match(row, /per piece: ₱11\.00/); assert.match(row, /per carton: ₱125\.00/); assert.match(row, /per tray: price not set \(hidden\)/);
+  assert.doesNotMatch(row, /per kg|per pack|per sack/);
+  // The new product has a stock row for every unit on the Daily Inventory (rows with nothing in them stay hidden there).
+  const names = db.prepare("SELECT o.unit FROM other_product_options o JOIN other_products p ON p.id = o.product_id WHERE p.name = 'Eggs (Large)' ORDER BY o.id").all().map((r) => r.unit);
+  assert.deepEqual(names, ['piece', 'carton', 'tray']);
+});
+
+await step('per-head fee: the admin switches Pour to per head and 3 heads pay it three times', async () => {
   await adminPage.click('a[href="#/products"]');
   await adminPage.click('[data-tab="fees"]');
   await adminPage.waitForSelector('[data-fee="POUR"]');
@@ -1454,10 +1623,10 @@ await step('per-head fee: the admin switches Po-ur & Slice to per head and 3 hea
   await adminPage.click('[data-action="heads-inc"]');
   await adminPage.fill('#amount', '5.4');
   assert.match(await adminPage.locator('.service-grid').innerText(), /\+₱45\.00 per head/);
-  await svc(adminPage, 'POUR').click();
+  await svc(adminPage, 'POUR_SLICE').click();
   await cut(adminPage, 'LARGE').click();
   assert.equal(await adminPage.locator('#itemTotal').innerText(), '₱415.80');         // ₱280.80 + 3 x ₱45.00
-  assert.match(await adminPage.locator('#sum').innerText(), /Po-ur & Slice \(3 heads\)[\s\S]*\+₱135\.00/);
+  assert.match(await adminPage.locator('#sum').innerText(), /Pour \(3 heads\)[\s\S]*\+₱135\.00/);
   await adminPage.click('#addBtn');
   await adminPage.click('[data-action="go-review"]');
   await adminPage.check('#reviewed');
@@ -1585,16 +1754,598 @@ await step('Users: Delete Account asks first, Cancel changes nothing, a double c
   adminPage.removeAllListeners('request');
 });
 
+// ---- Revision 9: Daily Inventory, stock on New order, Daily Report, Start New Business Day ------------------------------------
+const NEW_DAY_TEXT = 'You are about to close the current daily inventory record and prepare a new business-day report. Please export and verify the current day\'s report before continuing. Historical inventory and order records will be preserved. The next business day\'s Beginning Balance will be carried forward from the previous day\'s New Total.';
+const callApi = (page, method, url, body) => page.evaluate(async ([m, u, b]) => {
+  const r = await fetch(u, { method: m, headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'pos' }, body: b ? JSON.stringify(b) : undefined });
+  return { status: r.status, json: await r.json().catch(() => null) };
+}, [method, url, body ?? null]);
+/** Every row of one inventory table as numbers, read from what is on the screen (typed boxes and calculated cells alike). */
+const readRows = (page, kind) => page.evaluate((k) => [...document.querySelectorAll(`table[data-table="${k}"] tbody tr[data-row]`)].map((tr) => {
+  const out = { name: tr.querySelector('th').textContent.trim(), id: Number(tr.dataset.row) };
+  for (const td of tr.querySelectorAll('td')) {
+    const input = td.querySelector('input');
+    const holder = input ?? (td.dataset.col ? td : td.querySelector('[data-col]'));   // the Beginning Balance cell also holds the italic note and the Edited reason
+    const key = input ? input.dataset.field : holder?.dataset.col;
+    if (key) out[key] = Number((input ? input.value : holder.textContent).replace(/,/g, ''));
+  }
+  return out;
+}), kind);
+const invBox = (page, name, field) => page.locator(`.inv-input[aria-label="${name} ${field}"]`);
+const saveBox = async (page, name, field, value) => {
+  await page.evaluate(() => { document.querySelector('#invMsg').innerHTML = ''; });
+  await invBox(page, name, field).fill(value);
+  await invBox(page, name, field).press('Tab');
+  await page.waitForSelector('#invMsg .ok-box, #invMsg .error-box');
+};
+const dbCounts = () => db.prepare(`SELECT (SELECT COUNT(*) FROM orders) AS orders, (SELECT COUNT(*) FROM payments) AS payments, (SELECT COUNT(*) FROM order_items) AS items,
+  (SELECT COUNT(*) FROM inventory_records) AS records, (SELECT COUNT(*) FROM inventory_events) AS events, (SELECT COUNT(*) FROM business_days) AS days,
+  (SELECT COUNT(*) FROM business_days WHERE status = 'OPEN') AS open_days,
+  (SELECT COALESCE(SUM(beginning_milli + additional_milli + reject_milli + dead_milli + pull_out_milli), 0) FROM inventory_records) AS typed`).get();
+
+await step('Revision 9: Daily Inventory tab sits right beside Products, has the asked columns in order, and the formulas hold on screen', async () => {
+  await adminPage.click('a[href="#/inventory"]');
+  const nav = await adminPage.locator('#topbar nav a').allTextContents();
+  assert.equal(nav[nav.indexOf('Products') + 1], 'Daily Inventory', 'immediately beside Products');
+  await adminPage.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+  assert.deepEqual(await adminPage.locator('table[data-table="chicken"] thead th').allTextContents(),
+    ['Chicken Category', 'Beginning Balance', 'Additional', 'Total', 'Sold', 'Left', 'Reject', 'Dead', 'Pull Out', 'New Total']);
+  assert.deepEqual(await adminPage.locator('table[data-table="other"] thead th').allTextContents(),
+    ['Product Name', 'Beginning Balance', 'Additional', 'Total', 'Sold', 'Left', 'New Total']);
+  assert.deepEqual(await adminPage.locator('section.panel h3').allTextContents(), ['Chicken Inventory', 'Other Products', 'Daily Inventory Report'], 'the Daily Report moved here from New order');
+  assert.equal(await adminPage.locator('[data-inv-status]').innerText(), 'Open');
+
+  const chicken = await readRows(adminPage, 'chicken');
+  const other = await readRows(adminPage, 'other');
+  assert.ok(chicken.length >= 3 && other.length >= 3);
+  for (const r of chicken) {
+    assert.equal(r.total, r.beginning + r.additional, `${r.name}: Total = Beginning + Additional`);
+    assert.equal(r.left, r.total - r.sold, `${r.name}: Left = Total - Sold`);
+    assert.equal(r.new_total, r.left - r.reject - r.dead - r.pull_out, `${r.name}: New Total = Left - Reject - Dead - Pull Out`);
+  }
+  for (const r of other) {
+    assert.equal(r.total, r.beginning + r.additional, r.name);
+    assert.equal(r.new_total, r.left, `${r.name}: New Total = Left`);
+    assert.ok(!('reject' in r) && !('dead' in r) && !('pull_out' in r), 'other products have no Reject, Dead or Pull Out');
+  }
+  // Sold is counted from the saved orders, and the screen agrees with the database.
+  const dayId = db.prepare("SELECT id FROM business_days WHERE status = 'OPEN'").get().id;
+  const sold = db.prepare(`SELECT p.name, COALESCE(SUM(i.heads), 0) AS n FROM products p
+    LEFT JOIN order_items i ON i.product_id = p.id AND i.order_id IN (SELECT id FROM orders WHERE business_day_id = ? AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED'))
+    GROUP BY p.id`).all(dayId);
+  for (const s of sold) { const row = chicken.find((r) => r.name === s.name); if (row) assert.equal(row.sold, s.n, `${s.name}: Sold on screen = heads on the saved orders`); }
+  assert.ok(chicken.find((r) => r.name === 'Cull Chicken').sold > 0, 'earlier orders were counted');
+  await adminPage.screenshot({ path: '/tmp/shots/30-inventory.png', fullPage: true });
+});
+
+await step('Revision 9: inventory numbers are typed in place, recalculate at once, are saved, and survive a refresh; bad numbers are refused', async () => {
+  const name = 'Broiler Breeder Cull';
+  const row = async () => (await readRows(adminPage, 'chicken')).find((r) => r.name === name);
+  const before = await row();
+  await saveBox(adminPage, name, 'Additional', '20');
+  assert.match(await adminPage.locator('#invMsg').innerText(), /Saved: Broiler Breeder Cull/);
+  await saveBox(adminPage, name, 'Reject', '2');
+  await saveBox(adminPage, name, 'Dead', '1');
+  await saveBox(adminPage, name, 'Pull Out', '5');
+  let now = await row();
+  assert.deepEqual([now.additional, now.total, now.reject, now.dead, now.pull_out], [before.additional + 20, before.beginning + before.additional + 20, 2, 1, 5]);
+  assert.equal(now.sold, before.sold, 'Reject, Dead and Pull Out are not sales');
+  assert.equal(now.new_total, before.new_total + 20 - 8);
+  // refused: negative, text, and more removed than is left
+  for (const [field, bad] of [['Reject', '-1'], ['Dead', 'abc'], ['Pull Out', '999999'], ['Additional', '1.5']]) {
+    await saveBox(adminPage, name, field, bad);
+    assert.ok(await adminPage.locator('#invMsg .error-box').count(), `${field} "${bad}" is refused`);
+    const shown = await row();
+    assert.deepEqual([shown.reject, shown.dead, shown.pull_out, shown.additional], [2, 1, 5, before.additional + 20], 'the box goes back to the saved number');
+  }
+  await adminPage.reload();
+  await adminPage.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+  now = await row();
+  assert.deepEqual([now.additional, now.reject, now.dead, now.pull_out, now.new_total], [before.additional + 20, 2, 1, 5, before.new_total + 12], 'saved, not just shown');
+  // the saved numbers are the ones New order uses
+  const config = await callApi(adminPage, 'GET', '/api/config');
+  const id = db.prepare('SELECT id FROM products WHERE name = ?').get(name).id;
+  assert.equal(config.json.stock.chicken_heads[id], now.new_total, 'New order reads the same saved number');
+  assert.ok(db.prepare('SELECT COUNT(*) AS n FROM inventory_events').get().n >= 4, 'every change is in the audit trail');
+});
+
+await step('Revision 9: a cashier can look at the Daily Inventory but not change it; the other roles see the tab too', async () => {
+  const view = await newPage();
+  try {
+    await login(view, 'cash', 'cashier-pass-1');
+    assert.ok((await view.locator('#topbar nav a').allTextContents()).includes('Daily Inventory'));
+    await view.click('a[href="#/inventory"]');
+    await view.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+    assert.equal(await view.locator('.inv-input').count(), 0, 'no typing boxes');
+    assert.equal(await view.locator('[data-inv-note="readonly"]').count(), 1);
+    const res = await callApi(view, 'PATCH', `/api/inventory/records/${(await readRows(view, 'chicken'))[0].id}`, { rev: 1, additional: '5' });
+    assert.equal(res.status, 403, 'the server refuses it too');
+    assert.deepEqual(view.errors, []);
+  } finally { await view.context().close(); }
+});
+
+await step('Revision 9: New order shows Number of Heads, the unit of other products, and refuses more than is in stock with the exact message', async () => {
+  createProduct(db, admin, { name: 'Whole Chicken', price: '150' });
+  createOtherProduct(db, admin, { name: 'Feeds', kind: 'OTHER', prices: { sack: '1000' } });
+  setStock({ 'Whole Chicken': 3, 'Feeds - sack': 15, 'Eggs (Small) - piece': 20 });
+  const wholeId = db.prepare("SELECT id FROM products WHERE name = 'Whole Chicken'").get().id;
+  const optionId = (product, unit) => db.prepare('SELECT o.id FROM other_product_options o JOIN other_products p ON p.id = o.product_id WHERE p.name = ? AND o.unit = ?').get(product, unit).id;
+  const p = await newPage();
+  try {
+    await login(p, 'cash', 'cashier-pass-1');
+    await p.waitForSelector('#stockTotal');
+    const inv = getInventory(db, admin, {}, new Date());
+    const active = new Set(db.prepare('SELECT id FROM products WHERE active = 1').all().map((x) => x.id));
+    const expected = inv.chicken.filter((r) => active.has(r.item_id)).reduce((n, r) => n + Math.max(r.new_total, 0) / 1000, 0);
+    assert.equal(await p.locator('#stockTotal').innerText(), `Number of Heads: ${expected}`, 'the total comes from the saved Daily Inventory');
+    assert.equal((await p.locator(`[data-stock="chicken-${wholeId}"]`).innerText()).trim(), 'Number of Heads: 3');
+    await p.screenshot({ path: '/tmp/shots/31-stock-cards.png' });
+
+    // the specific product, and the message when too many heads are asked for
+    await p.click('.product-card:has-text("Whole Chicken")');
+    assert.match(await p.locator('#stockLine').innerText(), /^Number of Heads: 3 available for Whole Chicken/);
+    await svc(p, 'LIVE').click();
+    await p.fill('#amount', '8');
+    await p.fill('#heads', '4');
+    assert.equal(await p.locator('#hint').innerText(), 'Insufficient stock. Only 3 heads of Whole Chicken are available.');
+    assert.equal(await p.locator('#addBtn').isDisabled(), true);
+    await p.screenshot({ path: '/tmp/shots/32-insufficient.png' });
+    await p.fill('#heads', '0');
+    assert.match(await p.locator('#hint').innerText(), /Enter the number of heads/, 'zero heads is refused');
+    await p.fill('#heads', '3');
+    await p.fill('#amount', '6');
+    assert.equal(await p.locator('#hint').innerText(), '');
+    assert.equal(await p.locator('#addBtn').isDisabled(), false);
+    await p.click('#addBtn');
+    // the 3 heads are now in this order, so none are left for a second line
+    await p.click('.product-card:has-text("Whole Chicken")');
+    assert.match(await p.locator('#stockLine').innerText(), /^Number of Heads: 0 available for Whole Chicken/);
+    await svc(p, 'LIVE').click();
+    await p.fill('#amount', '2');
+    await p.fill('#heads', '1');
+    assert.equal(await p.locator('#hint').innerText(), 'Insufficient stock. Only 0 heads of Whole Chicken are available.');
+    await p.locator('[data-action="cfg-back"]').first().click();
+
+    // other products: quantity and unit from the saved numbers
+    await p.click('[data-tab="other"]');
+    assert.equal((await p.locator(`[data-stock="other-${optionId('Feeds', 'sack')}"]`).innerText()).trim(), '15 sacks');
+    assert.equal((await p.locator(`[data-stock="other-${optionId('Eggs (Small)', 'piece')}"]`).innerText()).trim(), '20 pieces');
+    await p.click('.product-card:has-text("Feeds")');
+    assert.match(await p.locator('#stockLine').innerText(), /^Available: 15 sacks of Feeds/);
+    await p.fill('#amount', '16');
+    assert.equal(await p.locator('#hint').innerText(), 'Insufficient stock. Only 15 sacks of Feeds are available.');
+    assert.equal(await p.locator('#addBtn').isDisabled(), true);
+    await p.fill('#amount', '0');
+    assert.notEqual(await p.locator('#hint').innerText(), '', 'zero is refused');
+    await p.fill('#amount', '-3');
+    assert.equal(await p.inputValue('#amount'), '3', 'a minus sign is not accepted');
+    await p.fill('#amount', '15');
+    assert.equal(await p.locator('#hint').innerText(), '');
+    await p.locator('[data-action="cfg-back"]').first().click();
+
+    // another cashier sells one of the 3 heads while this order is waiting: the server checks again at submit, and nothing is oversold
+    const cashUser = db.prepare("SELECT * FROM users WHERE username = 'cash'").get();
+    createOrder(db, cashUser, { submission_key: `rev9-race-${Date.now()}-xxxxxxxx`, customer_number: 'RACE-1',
+      items: [{ product_id: wholeId, weight: '2', heads: '1', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null }], payment: { method: 'CASH' } },
+    { config: loadConfig({ dbPath: ':memory:' }), now: new Date() });
+    const ordersBefore = db.prepare('SELECT COUNT(*) AS n FROM orders').get().n;
+    await p.click('[data-action="go-review"]');
+    await p.check('#reviewed');
+    await p.click('#submitBtn');
+    await p.waitForSelector('.review .error-box, .error-box');
+    assert.match(await p.locator('.error-box').first().innerText(), /Insufficient stock\. Only 2 heads of Whole Chicken are available\./);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, ordersBefore, 'the order was not saved');
+    assert.equal(db.prepare("SELECT COALESCE(SUM(i.heads), 0) AS n FROM order_items i JOIN orders o ON o.id = i.order_id WHERE i.product_id = ? AND o.status = 'COMPLETED'").get(wholeId).n, 1, 'only the first sale went through');
+    assert.equal(await p.locator('#submitBtn').isDisabled(), true, 'it must be reviewed again with the new numbers');
+    await p.evaluate(() => sessionStorage.clear());
+    assert.deepEqual(p.errors, []);
+  } finally { await p.context().close(); }
+});
+
+await step('Revision 10: New order no longer has the Daily Report or Start New Business Day sections', async () => {
+  await manager.click('a[href="#/new"]');
+  await manager.waitForSelector('.product-grid');
+  assert.equal(await manager.locator('#dailyReport, #newDay, #dayTools, [data-day]').count(), 0);
+  const text = await manager.locator('#main').innerText();
+  assert.doesNotMatch(text, /Reset Daily Records|Start New Business Day|Daily Report/);
+  await manager.screenshot({ path: '/tmp/shots/33-new-order-clean.png', fullPage: true });
+});
+
+await step('Revision 10: the Inventory page has Submit Closing Inventory / Reset Daily Records and the Whole Inventory Spreadsheet export side by side, with the Daily Inventory Report below; exports change nothing', async () => {
+  await manager.click('a[href="#/inventory"]');
+  await manager.waitForSelector('[data-inv="close"]');
+  assert.equal((await manager.locator('[data-inv="close"]').innerText()).trim(), 'Submit Closing Inventory / Reset Daily Records');
+  assert.equal((await manager.locator('[data-inv="whole"]').innerText()).trim(), 'Whole Inventory Spreadsheet export');
+  const close = await manager.locator('[data-inv="close"]').boundingBox();
+  const whole = await manager.locator('[data-inv="whole"]').boundingBox();
+  assert.ok(Math.abs(close.y - whole.y) < 8 && whole.x > close.x, 'the export button sits beside the closing button');
+  assert.equal(await manager.locator('#dailyReport h3').innerText(), 'Daily Inventory Report');
+  const y = (sel) => manager.locator(sel).evaluate((e) => e.getBoundingClientRect().top + window.scrollY);
+  assert.ok(await y('#dailyReport') > await y('table[data-table="other"]'), 'the report is below the inventory tables');
+  assert.deepEqual(await manager.locator('#dailyReport [data-inv]').allInnerTexts(), ['Export to CSV', 'Export to Excel (.xlsx)']);
+  const before = dbCounts();
+
+  const [csv] = await Promise.all([manager.waitForEvent('download'), manager.click('[data-inv="export-csv"]')]);
+  assert.match(csv.suggestedFilename(), /^daily-inventory-report_\d{4}-\d{2}-\d{2}\.csv$/);
+  const text = fs.readFileSync(await csv.path(), 'utf8');
+  assert.ok(text.startsWith('﻿'), 'a byte order mark so Excel reads the peso sign and accents');
+  assert.match(text, /Chicken Category,Beginning Balance,Additional,Total,Sold,Left,Reject,Dead,Pull Out,New Total/);
+  assert.match(text, /Product Name,Beginning Balance,Additional,Total,Sold,Left,New Total/);
+  assert.match(text, /ORD-\d{8}-\d{3}/, 'order numbers are listed');
+  assert.match(text, /Broiler Breeder Cull,[^\r\n]*/);
+  await manager.waitForSelector('#reportMsg .ok-box');
+  assert.match(await manager.locator('#reportMsg').innerText(), /Report saved: daily-inventory-report_\d{4}-\d{2}-\d{2}\.csv[\s\S]*Nothing was reset or changed/);
+
+  const [xlsx] = await Promise.all([manager.waitForEvent('download'), manager.click('[data-inv="export-xlsx"]')]);
+  assert.match(xlsx.suggestedFilename(), /^daily-inventory-report_\d{4}-\d{2}-\d{2}\.xlsx$/);
+  const bytes = fs.readFileSync(await xlsx.path());
+  assert.equal(bytes.subarray(0, 2).toString(), 'PK', 'an .xlsx is a zip file');
+  assert.ok(bytes.length > 2000);
+  fs.copyFileSync(await xlsx.path(), '/tmp/shots/daily-inventory-report.xlsx');
+
+  // the Whole Inventory Spreadsheet export (zero rows included; its contents are checked in the API tests)
+  await manager.evaluate(() => { document.querySelector('#invMsg').innerHTML = ''; });
+  const [all] = await Promise.all([manager.waitForEvent('download'), manager.click('[data-inv="whole"]')]);
+  assert.match(all.suggestedFilename(), /^whole-inventory_\d{4}-\d{2}-\d{2}\.xlsx$/);
+  const allBytes = fs.readFileSync(await all.path());
+  assert.equal(allBytes.subarray(0, 2).toString(), 'PK');
+  assert.ok(allBytes.length > 2000);
+  fs.copyFileSync(await all.path(), '/tmp/shots/whole-inventory.xlsx');
+  await manager.waitForSelector('#invMsg .ok-box');
+  assert.match(await manager.locator('#invMsg').innerText(), /Spreadsheet saved: whole-inventory_\d{4}-\d{2}-\d{2}\.xlsx[\s\S]*every product, including[\s\S]*Nothing was reset or changed/);
+  assert.deepEqual(dbCounts(), before, 'exporting changes no stock, no order and no record');
+
+  // a failed export says so plainly and still changes nothing
+  await manager.route('**/api/inventory-report.csv*', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'The disk is full.', code: 'SERVER' }) }));
+  await manager.click('[data-inv="export-csv"]');
+  await manager.waitForSelector('#reportMsg .error-box');
+  assert.match(await manager.locator('#reportMsg').innerText(), /The report could not be saved\. The disk is full\.[\s\S]*Nothing was reset or changed/);
+  await manager.unroute('**/api/inventory-report.csv*');
+  await manager.route('**/api/inventory-whole.xlsx*', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'The disk is full.', code: 'SERVER' }) }));
+  await manager.click('[data-inv="whole"]');
+  await manager.waitForSelector('#invMsg .error-box');
+  assert.match(await manager.locator('#invMsg').innerText(), /The spreadsheet could not be saved\. The disk is full\.[\s\S]*Nothing was reset or changed/);
+  await manager.unroute('**/api/inventory-whole.xlsx*');
+  assert.deepEqual(dbCounts(), before);
+  // a made-up date is refused by the server, not guessed
+  assert.equal((await callApi(manager, 'GET', '/api/inventory-report.csv?date=not-a-date')).status, 400);
+  await manager.screenshot({ path: '/tmp/shots/33-inventory-page.png', fullPage: true });
+});
+
+await step('Revision 10: other-product rows with nothing in them are hidden and can be shown from a list; a first Beginning Balance needs no reason', async () => {
+  await manager.reload();
+  await manager.waitForSelector('table[data-table="other"] tbody tr[data-row]');
+  const etag = 'Etag (Sun-Dried) - kg';
+  const shownNames = (await readRows(manager, 'other')).map((r) => r.name);
+  assert.ok(!shownNames.includes(etag), 'an empty row is not in the list');
+  assert.ok(shownNames.includes('Eggs (Small) - piece'), 'rows with stock are listed');
+  const hiddenNow = db.prepare(`SELECT COUNT(*) AS n FROM inventory_records r JOIN other_product_options o ON o.id = r.option_id JOIN other_products p ON p.id = o.product_id
+    WHERE r.business_day_id = (SELECT id FROM business_days WHERE status = 'OPEN') AND p.active = 1 AND r.beginning_milli = 0 AND r.additional_milli = 0`).get().n;
+  const picker = await manager.locator('#invAddRow option').allInnerTexts();
+  assert.ok(picker.includes(etag), 'the hidden row can be picked');
+  assert.equal(Number(await manager.locator('[data-hidden-count]').innerText()), picker.length - 1);
+  assert.ok(picker.length - 1 >= 4, `the new products' rows are in the list (${picker.length - 1} hidden, ${hiddenNow} empty in the database)`);
+  assert.match(await manager.locator('[data-inv-hidden]').innerText(), /Whole Inventory Spreadsheet export/);
+  // pick it, type its first Beginning Balance (a weighed unit takes decimals): no reason is asked
+  await manager.selectOption('#invAddRow', { label: etag });
+  await manager.waitForSelector(`.inv-input[aria-label="${etag} Beginning Balance"]`);
+  await saveBox(manager, etag, 'Beginning Balance', '12.5');
+  assert.equal(await manager.locator('dialog[open]').count(), 0, 'a first Beginning Balance needs no reason');
+  assert.match(await manager.locator('#invMsg').innerText(), /Saved: Etag \(Sun-Dried\) - kg/);
+  await manager.reload();
+  await manager.waitForSelector('table[data-table="other"] tbody tr[data-row]');
+  const row = (await readRows(manager, 'other')).find((r) => r.name === etag);
+  assert.deepEqual([row.beginning, row.new_total], [12.5, 12.5], 'it now has stock, so it stays in the list');
+  assert.ok(!(await manager.locator('#invAddRow option').allInnerTexts()).includes(etag));
+  await manager.screenshot({ path: '/tmp/shots/33b-hidden-rows.png', fullPage: true });
+});
+
+await step('Revision 10: correcting a Beginning Balance asks for a reason; Cancel keeps the old number; the reason is saved, kept in the history and shown as Edited', async () => {
+  const name = 'Cull Chicken';
+  const rowOf = async () => (await readRows(manager, 'chicken')).find((r) => r.name === name);
+  const before = await rowOf();
+  const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM inventory_events WHERE field = 'beginning'").get().n;
+  const typeBeginning = async (value) => { await invBox(manager, name, 'Beginning Balance').fill(String(value)); await invBox(manager, name, 'Beginning Balance').press('Tab'); await manager.waitForSelector('dialog[open] #reasonCode'); };
+
+  // the dialog names the product and both numbers; a reason must be chosen; Other needs words
+  await typeBeginning(before.beginning + 5);
+  assert.equal(await manager.locator('dialog h2').innerText(), 'Why is the Beginning Balance changing?');
+  assert.match(await manager.locator('dialog').innerText(), new RegExp(`Cull Chicken[\\s\\S]*${before.beginning}[\\s\\S]*${before.beginning + 5}`));
+  assert.deepEqual(await manager.locator('#reasonCode option').allInnerTexts(), ['Choose a reason...', 'Incorrect inventory', 'Recount (stock check)', 'Typing mistake', 'Other (explain below)']);
+  await manager.click('dialog [data-dlg-action="1"]');
+  assert.match(await manager.locator('#reasonMsg').innerText(), /Choose a reason first/);
+  await manager.selectOption('#reasonCode', 'OTHER');
+  await manager.click('dialog [data-dlg-action="1"]');
+  assert.match(await manager.locator('#reasonMsg').innerText(), /explain the reason/);
+  assert.equal(await manager.locator('dialog[open]').count(), 1, 'the dialog stays open until a reason is given');
+  // Cancel: nothing is saved and the box goes back
+  await manager.click('dialog [data-dlg-action="0"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  assert.equal((await rowOf()).beginning, before.beginning, 'the box shows the old number again');
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM inventory_events WHERE field = 'beginning'").get().n, eventsBefore, 'Cancel saved nothing');
+
+  // Save with a listed reason
+  await typeBeginning(before.beginning + 5);
+  await manager.selectOption('#reasonCode', 'INCORRECT_INVENTORY');
+  await manager.click('dialog [data-dlg-action="1"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  const cell = manager.locator(`tr[data-row="${before.id}"] .inv-begin`);
+  await cell.locator('.inv-why').waitFor();
+  assert.match(await cell.innerText(), /Edited: Incorrect inventory/);
+  assert.equal((await rowOf()).beginning, before.beginning + 5);
+  let ev = db.prepare("SELECT * FROM inventory_events WHERE field = 'beginning' ORDER BY id DESC LIMIT 1").get();
+  assert.deepEqual([ev.old_milli, ev.new_milli, ev.reason_code, ev.reason_note], [before.beginning * 1000, (before.beginning + 5) * 1000, 'INCORRECT_INVENTORY', null]);
+  assert.equal(db.prepare('SELECT display_name FROM users WHERE id = ?').get(ev.user_id).display_name, 'Manager');
+
+  // Save with "Other" and the person's own words
+  await typeBeginning(before.beginning + 2);
+  await manager.selectOption('#reasonCode', 'OTHER');
+  await manager.fill('#reasonNote', 'Two crates were counted twice');
+  await manager.click('dialog [data-dlg-action="1"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  await manager.waitForFunction(() => /Two crates were counted twice/.test(document.querySelector('.inv-why')?.textContent ?? ''));
+  ev = db.prepare("SELECT * FROM inventory_events WHERE field = 'beginning' ORDER BY id DESC LIMIT 1").get();
+  assert.deepEqual([ev.old_milli, ev.new_milli, ev.reason_code, ev.reason_note], [(before.beginning + 5) * 1000, (before.beginning + 2) * 1000, 'OTHER', 'Two crates were counted twice']);
+
+  // it survives a refresh, and the server itself refuses a correction that gives no reason
+  await manager.reload();
+  await manager.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+  assert.match(await manager.locator(`tr[data-row="${before.id}"] .inv-why`).innerText(), /Edited: Two crates were counted twice/);
+  assert.match(await manager.locator(`tr[data-row="${before.id}"] .inv-why`).getAttribute('title'), /Manager/);
+  const rec = db.prepare('SELECT id, rev FROM inventory_records WHERE id = ?').get(before.id);
+  const noReason = await callApi(manager, 'PATCH', `/api/inventory/records/${rec.id}`, { rev: rec.rev, beginning: '3' });
+  assert.equal(noReason.status, 400);
+  assert.equal(noReason.json.code, 'REASON_REQUIRED');
+  assert.equal(db.prepare('SELECT beginning_milli FROM inventory_records WHERE id = ?').get(rec.id).beginning_milli, (before.beginning + 2) * 1000, 'nothing changed');
+  // putting it back, with a reason, so the later steps start from the same numbers
+  await typeBeginning(before.beginning);
+  await manager.selectOption('#reasonCode', 'RECOUNT');
+  await manager.click('dialog [data-dlg-action="1"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  await manager.waitForFunction(() => document.querySelector('.inv-why')?.textContent.includes('Recount'));
+});
+
+await step('Revision 10: submitting the closing inventory asks first; open orders block it; Cancel and Export Report change nothing; Confirm closes the day once, carries the New Total forward, clears Complete orders from the Order List and keeps Standby ones', async () => {
+  const roster = () => ({ dayList: db.prepare('SELECT business_date, status FROM business_days ORDER BY id').all(), ...dbCounts() });
+  const openDate = db.prepare("SELECT business_date FROM business_days WHERE status = 'OPEN'").get().business_date;
+  const before = roster();
+  await manager.click('a[href="#/inventory"]');
+  await manager.waitForSelector('[data-inv="close"]');
+  assert.equal(await manager.locator('[data-inv="close"]').isDisabled(), false);
+
+  // 1. the confirmation says what will happen, word for word; the Ongoing order from the race above blocks it
+  await manager.click('[data-inv="close"]');
+  await manager.waitForSelector('dialog[open] #ndCheck .error-box');
+  assert.equal(await manager.locator('dialog h2, dialog h3, dialog .dlg-title').first().innerText(), 'Start a New Business Day?');
+  assert.equal((await manager.locator('dialog [data-new-day-text]').innerText()).replace(/\s+/g, ' '), NEW_DAY_TEXT);
+  assert.deepEqual(await manager.locator('dialog [data-dlg-action]').allInnerTexts(), ['Cancel', 'Export Report', 'Confirm and Start New Day']);
+  assert.match(await manager.locator('#ndCheck').innerText(), /still Ongoing[\s\S]*Move each one to Standby or Complete/);
+  assert.equal(await manager.locator('dialog [data-dlg-action="2"]').isDisabled(), true, 'cannot confirm while an order is still being prepared');
+  await manager.screenshot({ path: '/tmp/shots/34-new-day-blocked.png' });
+  await manager.click('dialog [data-dlg-action="0"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  assert.deepEqual(roster(), before, 'Cancel changes nothing');
+
+  // 2. the shop moves the Ongoing sales on: the first one to Standby (waiting for its customer), the rest to Complete
+  const ongoing = db.prepare("SELECT id, order_number FROM orders WHERE fulfillment_status = 'ONGOING' AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED') ORDER BY id").all();
+  assert.ok(ongoing.length >= 2, 'there are orders to move');
+  for (const [i, o] of ongoing.entries()) {
+    assert.equal((await callApi(manager, 'POST', `/api/orders/${o.id}/fulfillment`, { status: i === 0 ? 'STANDBY' : 'COMPLETE' })).status, 200);
+  }
+  const standbyOrder = ongoing[0];
+  const boardBefore = (await callApi(manager, 'GET', '/api/board')).json;
+  const completeBefore = boardBefore.orders.filter((o) => o.fulfillment_status === 'COMPLETE').map((o) => o.order_number);
+  const standbyBefore = boardBefore.orders.filter((o) => o.fulfillment_status === 'STANDBY').map((o) => o.order_number).sort();
+  assert.ok(completeBefore.length >= 1 && standbyBefore.includes(standbyOrder.order_number));
+  const afterMoves = roster();
+  await manager.click('[data-inv="close"]');
+  await manager.waitForSelector('dialog[open] #ndCheck');
+  await manager.waitForFunction(() => !document.querySelector('#ndCheck')?.innerText.includes('Checking'));
+  assert.equal(await manager.locator('#ndCheck .error-box').count(), 0);
+  assert.match(await manager.locator('#ndCheck').innerText(), /Standby/, 'it says that Standby orders stay');
+  assert.equal(await manager.locator('dialog [data-dlg-action="2"]').isDisabled(), false);
+  assert.equal(await manager.locator('dialog [data-new-day-date]').innerText(), openDate);
+
+  // 3. Export Report saves the report and stays in the dialog; the day is still open
+  const [exported] = await Promise.all([manager.waitForEvent('download'), manager.click('dialog [data-dlg-action="1"]')]);
+  assert.match(exported.suggestedFilename(), /^daily-inventory-report_\d{4}-\d{2}-\d{2}\.xlsx$/);
+  await manager.waitForSelector('dialog #ndMsg .ok-box');
+  assert.equal(await manager.locator('dialog[open]').count(), 1, 'the confirmation is still there');
+  assert.deepEqual(roster(), afterMoves, 'exporting alone never resets');
+
+  // 4. what the closed day looked like, to compare with the next one
+  const closedView = getInventory(db, admin, { date: openDate }, new Date());
+  const newTotals = new Map([...closedView.chicken, ...closedView.other].map((r) => [`${r.kind}-${r.item_id}`, r.new_total]));
+  const beginnings = new Map([...closedView.chicken, ...closedView.other].map((r) => [`${r.kind}-${r.item_id}`, r.beginning]));
+  assert.ok([...newTotals.values()].some((v) => v > 0));
+
+  // 5. Confirm (double-clicked): one new day, one closed day
+  await manager.locator('dialog [data-dlg-action="2"]').dblclick();
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  await manager.waitForFunction(() => /New business day started/.test(document.querySelector('#toasts')?.innerText ?? ''));
+  assert.match(await manager.locator('#toasts').innerText(), /Standby order[s]? stay[s]? on the Order List/);
+  const after = roster();
+  assert.equal(after.dayList.length, before.dayList.length + 1, 'exactly one new day');
+  assert.equal(after.open_days, 1, 'one open day');
+  assert.equal(after.dayList.find((d) => d.business_date === openDate).status, 'CLOSED');
+  const next = after.dayList.find((d) => d.status === 'OPEN').business_date;
+  assert.equal(next, new Date(Date.parse(`${openDate}T00:00:00Z`) + 86400000).toISOString().slice(0, 10), 'the next day after a day that is already today');
+  assert.equal(after.orders, before.orders, 'no order was touched');
+  assert.equal(after.payments, before.payments);
+  assert.equal(after.items, before.items);
+
+  // 6. carried forward: Beginning Balance = previous New Total, counters at zero; a manager may still correct it (with a reason)
+  const nextView = getInventory(db, admin, { date: next }, new Date());
+  for (const r of [...nextView.chicken, ...nextView.other]) {
+    assert.equal(r.beginning, newTotals.get(`${r.kind}-${r.item_id}`), `${r.name}: Beginning Balance = last New Total`);
+    assert.deepEqual([r.additional, r.sold, r.reject ?? 0, r.dead ?? 0, r.pull_out ?? 0], [0, 0, 0, 0, 0], `${r.name}: counters start at zero`);
+    assert.equal(r.beginning_editable, true, 'a carried balance can be corrected by a manager');
+    assert.equal(r.beginning_needs_reason, true, 'and the correction needs a reason');
+  }
+  // the closed day is history: still there, still the same numbers, and cannot be changed
+  const closedAgain = getInventory(db, admin, { date: openDate }, new Date());
+  assert.deepEqual(closedAgain.chicken.map((r) => [r.item_id, r.beginning, r.additional, r.sold, r.new_total]), closedView.chicken.map((r) => [r.item_id, r.beginning, r.additional, r.sold, r.new_total]));
+  const record = db.prepare('SELECT id, rev FROM inventory_records WHERE business_day_id = (SELECT id FROM business_days WHERE business_date = ?) LIMIT 1').get(openDate);
+  const edit = await callApi(manager, 'PATCH', `/api/inventory/records/${record.id}`, { rev: record.rev, additional: '9' });
+  assert.equal(edit.status, 409);
+  assert.match(edit.json.error, /closed/i);
+  const editBeginning = await callApi(manager, 'PATCH', `/api/inventory/records/${record.id}`, { rev: record.rev, beginning: '9', reason: 'RECOUNT' });
+  assert.equal(editBeginning.status, 409, 'a closed day cannot be corrected, with or without a reason');
+  // a second reset of the same day (a second click, another person) is refused and creates nothing
+  const again = await callApi(manager, 'POST', '/api/inventory/close-day', { business_date: openDate });
+  assert.equal(again.status, 409);
+  assert.equal(again.json.code, 'ALREADY_CLOSED');
+  assert.deepEqual(roster(), after);
+
+  // 7. the Order List: Complete orders of the closed day are gone, Standby ones stay (marked as sold on the earlier day)
+  const boardAfter = (await callApi(manager, 'GET', '/api/board')).json;
+  assert.equal(boardAfter.orders.filter((o) => o.fulfillment_status === 'COMPLETE').length, 0, 'the Complete column was cleared');
+  assert.deepEqual(boardAfter.orders.filter((o) => o.fulfillment_status === 'STANDBY').map((o) => o.order_number).sort(), standbyBefore, 'Standby orders stayed');
+  for (const n of completeBefore) {
+    const o = db.prepare('SELECT status, fulfillment_status FROM orders WHERE order_number = ?').get(n);
+    assert.deepEqual([o.status, o.fulfillment_status], ['COMPLETED', 'COMPLETE'], `${n} is still saved as a Complete sale`);
+  }
+  await manager.click('a[href="#/board"]');
+  await manager.waitForSelector('.kcard');
+  assert.match(await col(manager, 'complete').innerText(), /No complete orders/);
+  const mdy = (iso) => `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`;
+  const standbyCard = cardOf(manager, standbyOrder.order_number);
+  assert.equal(await standbyCard.count(), 1);
+  assert.equal((await standbyCard.locator('[data-earlier]').innerText()).trim(), `Sold ${mdy(openDate)}`);
+  // claiming it: Complete, and it leaves the Order List at once (it stays in Orders and the reports)
+  await standbyCard.locator('[data-move-menu]').click();
+  await manager.click('[data-menu-move="COMPLETE"]');
+  await manager.click('dialog [data-dlg-action="1"]');
+  await manager.waitForFunction((n) => !document.querySelector('#boardBody')?.innerText.includes(n), standbyOrder.order_number);
+  assert.match(await manager.locator('#toasts').innerText(), /is Complete and has left the Order List\. It is still saved in Orders/);
+  assert.equal(dbStatus(standbyOrder.order_number), 'COMPLETE');
+  assert.equal(db.prepare('SELECT status FROM orders WHERE order_number = ?').get(standbyOrder.order_number).status, 'COMPLETED');
+  await manager.click('#boardRefresh');
+  await manager.waitForSelector('.kcard, .kcol-empty');
+  assert.ok(!(await manager.locator('#boardBody').innerText()).includes(standbyOrder.order_number), 'it stays off the list after a refresh');
+  await manager.screenshot({ path: '/tmp/shots/35b-board-after-closing.png', fullPage: true });
+
+  // 8. the Inventory page: both days, the italic previous-day note, and corrections of a carried number
+  await manager.click('a[href="#/inventory"]');
+  await manager.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+  assert.ok((await manager.locator('#invDate option').allInnerTexts()).includes(`${next} (open)`));
+  assert.ok((await manager.locator('#invDate option').allInnerTexts()).includes(`${openDate} (closed)`));
+  const cullId = db.prepare("SELECT id FROM products WHERE name = 'Cull Chicken'").get().id;
+  const cullRow = db.prepare('SELECT r.id FROM inventory_records r WHERE r.product_id = ? AND r.business_day_id = (SELECT id FROM business_days WHERE status = \'OPEN\')').get(cullId).id;
+  const prevBeginning = beginnings.get(`CHICKEN-${cullId}`) / 1000;   // the screen shows heads; the stored numbers are thousandths
+  assert.equal((await manager.locator(`tr[data-row="${cullRow}"] [data-prev]`).innerText()).trim(), `(${prevBeginning} ${mdy(openDate)})`, 'italic note: the previous day\'s Beginning Balance and its date');
+  assert.equal(await manager.locator(`tr[data-row="${cullRow}"] [data-prev]`).evaluate((e) => getComputedStyle(e).fontStyle), 'italic');
+  assert.ok(await manager.locator('.inv-input[aria-label$="Beginning Balance"]').count() > 0, 'carried Beginning Balances can be corrected');
+  await manager.locator(`tr[data-row="${cullRow}"] .inv-input[aria-label$="Beginning Balance"]`).fill('1');
+  await manager.locator(`tr[data-row="${cullRow}"] .inv-input[aria-label$="Beginning Balance"]`).press('Tab');
+  await manager.waitForSelector('dialog[open] #reasonCode');
+  await manager.click('dialog [data-dlg-action="0"]');
+  await manager.waitForSelector('dialog[open]', { state: 'detached' });
+  await manager.selectOption('#invDate', openDate);
+  await manager.waitForSelector('[data-inv-note="closed"]');
+  assert.equal(await manager.locator('[data-inv-status]').innerText(), 'Closed');
+  assert.equal(await manager.locator('.inv-input').count(), 0, 'a closed day cannot be edited');
+  assert.equal(await manager.locator('[data-inv="close"]').isDisabled(), true, 'a closed day cannot be closed again');
+  await manager.screenshot({ path: '/tmp/shots/35-closed-day.png', fullPage: true });
+  await manager.selectOption('#invDate', next);
+  await manager.waitForSelector('.inv-input');
+
+  // 9. only a manager or the admin can submit the closing inventory
+  const view = await newPage();
+  try {
+    await login(view, 'cash', 'cashier-pass-1');
+    await view.click('a[href="#/inventory"]');
+    await view.waitForSelector('[data-inv="close"]');
+    assert.equal(await view.locator('[data-inv="close"]').isDisabled(), true);
+    assert.match(await view.locator('[data-inv-hint]').innerText(), /Only a manager or the admin can submit the closing inventory/);
+    assert.equal(await view.locator('[data-inv="whole"]').isDisabled(), false, 'everyone signed in can export');
+    assert.equal((await callApi(view, 'POST', '/api/inventory/close-day', { business_date: next })).status, 403);
+    assert.deepEqual(view.errors, []);
+  } finally { await view.context().close(); }
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM business_days WHERE status = 'OPEN'").get().n, 1);
+});
+
+await step('Revision 10: the Order List has a Zoom out / Normal size button and no "completed orders from" choice', async () => {
+  // a few fresh orders so the board has cards to measure (the closing above cleared the day before)
+  const cashUser = db.prepare("SELECT * FROM users WHERE username = 'cash'").get();
+  const cullNow = db.prepare("SELECT id FROM products WHERE name = 'Cull Chicken'").get().id;
+  for (let i = 0; i < 3; i++) {
+    createOrder(db, cashUser, { submission_key: `zoom-${i}-${Date.now()}-xxxxxxxx`, customer_number: `ZOOM-${i}`,
+      items: [{ product_id: cullNow, weight: '1.5', heads: '1', feather: 'LIVE', dara: false, cut: 'NONE', slice_size: null }], payment: { method: 'CASH' } },
+    { config: loadConfig({ dbPath: ':memory:' }), now: new Date() });
+  }
+  await manager.click('a[href="#/board"]');
+  await manager.waitForSelector('#boardZoom');
+  await manager.waitForSelector('.kcard');
+  assert.equal(await manager.locator('#completeDays').count(), 0, 'the old selector is gone');
+  assert.doesNotMatch(await manager.locator('.board-tools').innerText(), /completed orders from/i);
+  assert.equal((await manager.locator('#boardZoom').innerText()).trim(), 'Zoom out');
+  await manager.evaluate(() => localStorage.removeItem('pos.orderList.zoomedOut'));
+  const cardH = async () => (await manager.locator('.kcard').first().boundingBox()).height;
+  const normal = await cardH();
+  await manager.click('#boardZoom');
+  assert.equal((await manager.locator('#boardZoom').innerText()).trim(), 'Normal size');
+  assert.equal(await manager.locator('#boardZoom').getAttribute('aria-pressed'), 'true');
+  assert.equal(await manager.locator('#boardBody').evaluate((e) => e.classList.contains('board-wrap--zoomed')), true);
+  const small = await cardH();
+  assert.ok(small < normal * 0.85, `cards are drawn smaller (${Math.round(small)}px instead of ${Math.round(normal)}px) so more fit on the screen`);
+  await manager.screenshot({ path: '/tmp/shots/35c-board-zoomed.png', fullPage: true });
+  assert.equal(await manager.evaluate(() => localStorage.getItem('pos.orderList.zoomedOut')), '1');
+  await manager.reload();
+  await manager.waitForSelector('#boardZoom');
+  assert.equal((await manager.locator('#boardZoom').innerText()).trim(), 'Normal size', 'the choice is remembered in this browser');
+  await manager.click('#boardZoom');
+  assert.equal((await manager.locator('#boardZoom').innerText()).trim(), 'Zoom out');
+  assert.equal(await manager.locator('#boardBody').evaluate((e) => e.classList.contains('board-wrap--zoomed')), false);
+  assert.ok(Math.abs((await cardH()) - normal) < 3, 'back to the normal size');
+  // zooming only changes the picture: no order was touched
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM orders WHERE status NOT IN ('CANCELED','REPLACED')").get().n > 0, true);
+});
+
 await step('phone width: no sideways scrolling on the weight and service screen', async () => {
   const phone = await newPage({ width: 390, height: 844 });
   await login(phone, 'cash', 'cashier-pass-1');
   await phone.click('.product-card:has-text("Cull Chicken")');
-  await svc(phone, 'POUR').click();
+  await svc(phone, 'POUR_SLICE').click();
   assert.equal(await phone.locator('#heads').isVisible(), true);
   const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(overflow <= 1, `page is ${overflow}px too wide`);
   await phone.screenshot({ path: '/tmp/shots/9-phone.png', fullPage: true });
   assert.deepEqual(phone.errors, []);
+});
+
+await step('Revision 10: phone width: the Inventory page with its two buttons and the Daily Inventory Report, the Order List zoom button and the seven services do not make the page scroll sideways', async () => {
+  const phone = await newPage({ width: 390, height: 844 });
+  try {
+    await login(phone, 'mgr', 'manager-pass-1');
+    await phone.waitForSelector('#stockTotal');
+    const wide = () => phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.ok(await wide() <= 1, `New order is ${await wide()}px too wide`);
+    await phone.click('a[href="#/inventory"]');
+    await phone.waitForSelector('table[data-table="chicken"] tbody tr[data-row]');
+    assert.ok(await wide() <= 1, `Daily Inventory is ${await wide()}px too wide: the tables scroll inside their own box`);
+    for (const sel of ['[data-inv="close"]', '[data-inv="whole"]']) {
+      const b = await phone.locator(sel).boundingBox();
+      assert.ok(b.x >= 0 && b.x + b.width <= 390, `${sel} fits inside the phone screen`);
+    }
+    await phone.locator('#dailyReport').scrollIntoViewIfNeeded();
+    assert.ok(await wide() <= 1, 'the Daily Inventory Report fits');
+    await phone.screenshot({ path: '/tmp/shots/36-phone-report.png' });
+    await phone.evaluate(() => window.scrollTo(0, 0));
+    await phone.screenshot({ path: '/tmp/shots/37-phone-inventory.png' });
+    await phone.evaluate(() => { location.hash = '#/board'; });
+    await phone.waitForSelector('#boardZoom');
+    assert.ok(await wide() <= 1, 'the Order List fits');
+    await phone.click('#boardZoom');
+    assert.ok(await wide() <= 1, 'the zoomed Order List fits');
+    await phone.click('#boardZoom');
+    await phone.click('a[href="#/new"]');
+    await phone.click('.product-card >> nth=0');
+    await svc(phone, 'POUR_DUKOT').click();
+    assert.ok(await wide() <= 1, 'the seven services fit');
+    await phone.screenshot({ path: '/tmp/shots/38-phone-services.png', fullPage: true });
+    assert.deepEqual(phone.errors, []);
+  } finally { await phone.context().close(); }
 });
 
 await step('no browser errors or blocked resources on any screen', async () => {

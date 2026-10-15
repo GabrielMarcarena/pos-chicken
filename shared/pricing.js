@@ -2,13 +2,14 @@
 
 import { mulDivRound } from './money.js';
 
-/** Which paid services does this preparation use? Live uses none. Slicing is part of Po-ur and Dressed. */
+/**
+ * Which paid services does this preparation use? Live uses none. Pour (burn) and Dress each carry their own fee, per head, whatever the
+ * cutting is (whole, sliced or Dukot). With Blood (dara) and Dukot are no longer charged.
+ */
 export function serviceCodes(prep) {
   const codes = [];
   if (prep.feather === 'POUR') codes.push('POUR');
   if (prep.feather === 'NOT_POUR') codes.push('NOT_POUR');
-  if (prep.dara && prep.feather !== 'LIVE') codes.push('DARA');
-  if (prep.cut === 'DUKOT') codes.push('DUKOT');
   return codes;
 }
 
@@ -40,6 +41,14 @@ export function chickenLine({ pricePerKgCentavos, weightG, heads = 1, prep, fees
  */
 export function otherLine({ unitPriceCentavos, quantityMilli }) {
   return { lineTotal: mulDivRound(unitPriceCentavos, quantityMilli, 1000) };
+}
+
+/**
+ * Price one Katay or Dead chicken line from the ref (Revision 12): the price per kg the cashier typed x the weight of all the heads,
+ * rounded half up to the centavo, like a chicken line. No service fee is ever added.
+ */
+export function refLine({ pricePerKgCentavos, weightG }) {
+  return { lineTotal: mulDivRound(pricePerKgCentavos, weightG, 1000) };
 }
 
 /** The subtotal is the sum of the already-rounded line totals, so the slip always adds up exactly. */
