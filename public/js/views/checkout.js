@@ -2,7 +2,8 @@
 // Revision 12: the Advanced button (left of Chicken and Other products) opens the ref stock of Katay and Dead chicken, the cash breakdown
 // and the expenses (see advanced.js). A Katay or Dead chicken from the ref is sold here by the kilo, at a price the cashier types.
 import { api } from '../api.js';
-import { state, saveDraft, clearDraft, findProduct, findOption, priceItem, priceOther, priceRef, draftTotals, draftLineCount, refreshConfig, hasStock, savedHeads, savedMilli, availableHeads, availableMilli, stockOptionOf, savedRefHeads, availableRefHeads } from '../state.js';
+import { setScreenKeys, keyBadge, typingIn, hasKeyboard } from '../keys.js';
+import { state, saveDraft, clearDraft, findProduct, findOption, priceItem, priceOther, priceRef, draftTotals, draftLineCount, refreshConfig, hasStock, savedHeads, savedMilli, availableHeads, availableMilli, stockOptionOf, savedRefHeads, availableRefHeads, refProducts } from '../state.js';
 import { $, esc, label, formatPeso, formatKg, formatThousandths, uuid, toast, errorBox, confirmDialog, prepChips, fmtDateTime, iconFor, productPicture, watchImages } from '../util.js';
 import { emptyPrep, applyPrepChange, validatePrep, serviceOf, needsSliceSize } from '/shared/rules.js';
 import { parseWeightToGrams, parseQuantityToMilli, parseWholeQuantityToMilli, parsePesosToCentavos, parseHeads, MAX_HEADS } from '/shared/money.js';
@@ -43,6 +44,7 @@ export async function mountCheckout(root) {
   root.oninput = onInput;
   root.onchange = onChange;
   root.onkeydown = onKeyDown;
+  setScreenKeys(checkoutKeys);   // Revision 13: the keyboard shortcuts of this screen (keys.js)
   watchImages(root);   // a product photo that cannot be loaded is replaced by its icon
   render();
 }
@@ -103,8 +105,8 @@ function renderGrid() {
     const totalHeads = products.reduce((n, p) => n + savedHeads(p.id), 0);
     grid.innerHTML = products.length
       ? `${staleNote()}${hasStock() ? `<p class="stock-total" id="stockTotal" data-stock="chicken-total">Number of Heads: <strong>${totalHeads}</strong></p>` : ''}
-        <div class="product-grid">${products.map((p) => `
-          <button type="button" class="product-card" data-action="pick-product" data-id="${p.id}">
+        <div class="product-grid">${products.map((p, i) => `
+          <button type="button" class="product-card" data-action="pick-product" data-id="${p.id}">${i < 9 ? keyBadge(String(i + 1)) : ''}
             <span class="ico" aria-hidden="true">${productPicture('chicken', p)}</span>
             <span class="meta"><span class="name">${esc(p.name)}</span><span class="price">${formatPeso(p.price_per_kg_centavos)}/kg</span>
               ${hasStock() ? `<span class="stock${savedHeads(p.id) === 0 ? ' stock--out' : ''}" data-stock="chicken-${p.id}">Number of Heads: ${savedHeads(p.id)}</span>` : ''}</span>
@@ -115,8 +117,8 @@ function renderGrid() {
   const q = ui.search.trim().toLowerCase();
   const shown = others.filter((p) => !q || p.name.toLowerCase().includes(q));
   grid.innerHTML = shown.length
-    ? `${staleNote()}<div class="product-grid">${shown.map((p) => `
-        <button type="button" class="product-card" data-action="pick-other" data-id="${p.id}">
+    ? `${staleNote()}<div class="product-grid">${shown.map((p, i) => `
+        <button type="button" class="product-card" data-action="pick-other" data-id="${p.id}">${i < 9 ? keyBadge(String(i + 1)) : ''}
           <span class="ico" aria-hidden="true">${productPicture('other', p)}</span>
           <span class="meta"><span class="name">${esc(p.name)}</span>
             <span class="opts">${p.options.map((o) => `<span class="price">${formatPeso(o.price_centavos)}/${esc(o.unit)}</span>`).join('')}</span>
@@ -143,7 +145,7 @@ function stockRows(p) {
 function staleNote() {
   const stock = state.config?.stock;
   if (!stock?.stale) return '';
-  return `<div class="note-box stale-note" role="status" data-stale-day>Stock is being counted on the business day of <strong>${esc(stock.business_date)}</strong>, which is still open. A manager closes it on the Daily Inventory screen: <strong>Submit Inventory Today</strong>, then <strong>Closed Inventory Today and Reset the Day</strong>.</div>`;
+  return `<div class="note-box stale-note" role="status" data-stale-day>Stock is being counted on the business day of <strong>${esc(stock.business_date)}</strong>, which is from an earlier date. It is saved and closed automatically within a minute; reload the page to sell on today's business day.</div>`;
 }
 
 function cfgChickenHtml() {
@@ -187,8 +189,8 @@ function cfgChickenHtml() {
 function cfgOtherHtml() {
   const product = state.config.other_products.find((p) => p.id === ui.cfg.productId);
   const chosen = findOption(ui.cfg.optionId).option;
-  const options = product.options.map((o) => `<button type="button" class="choice" role="radio" aria-checked="${o.id === chosen.id}" data-action="pick-option" data-id="${o.id}">
-      <span>${o.sold_by === 'PER_KG' ? 'Per kg' : `Per ${esc(o.unit)}`}<small>${formatPeso(o.price_centavos)}</small></span></button>`).join('');
+  const options = product.options.map((o, i) => `<button type="button" class="choice" role="radio" aria-checked="${o.id === chosen.id}" data-action="pick-option" data-id="${o.id}">
+      ${i < 9 ? keyBadge(`Alt+${i + 1}`) : ''}<span>${o.sold_by === 'PER_KG' ? 'Per kg' : `Per ${esc(o.unit)}`}<small>${formatPeso(o.price_centavos)}</small></span></button>`).join('');
   const word = chosen.sold_by === 'PER_KG' ? 'Weight in kg' : `How many ${chosen.unit}?`;
   return `
     <div class="cfg-head">
@@ -269,6 +271,7 @@ function cfgRefHtml() {
           <div class="field"><label for="refNote">Note <span class="muted">(optional)</span></label>
             <input id="refNote" type="text" maxlength="200" autocomplete="off" value="${esc(c.note)}" placeholder="for example bottom shelf"></div>`
     : `
+          ${refChooserHtml()}
           <div class="field"><label for="refPrice">Price per kg (₱) <span class="req">required</span></label>
             <input id="refPrice" type="text" inputmode="decimal" autocomplete="off" value="${esc(c.price)}" placeholder="for example 90"></div>
           <p class="muted">No service fee is added to Katay or Dead chicken. If the customer gets a discount, add it on the review screen.</p>`}
@@ -279,6 +282,22 @@ function cfgRefHtml() {
         </div>
       </div>
     </div>`;
+}
+
+/**
+ * Revision 13: which chicken the Katay or Dead being sold came from (B-Cull, Cull, Broiler ...). One button per chicken that has heads
+ * in the ref, with how many. The line being edited keeps its chicken even when the ref has none left of it.
+ */
+function refChooserHtml() {
+  const c = ui.cfg;
+  const list = refProducts(c.refKind);
+  if (c.productId && !list.some((p) => p.id === c.productId)) list.push({ id: c.productId, name: findProduct(c.productId)?.name ?? c.productName ?? `Chicken #${c.productId}`, heads: 0 });
+  const kind = c.refKind === 'KATAY' ? 'Katay' : 'Dead';
+  if (!list.length) return `<p class="note-box" data-ref-empty>There is no ${kind} chicken in the ref. Store one first (Advanced &gt; ${esc(REF_LABELS[c.refKind])} &gt; Store in the ref).</p>`;
+  const buttons = list.map((p, i) => `<button type="button" class="choice" role="radio" aria-checked="${p.id === c.productId}" data-action="ref-product" data-id="${p.id}">
+      ${i < 9 ? keyBadge(`Alt+${i + 1}`) : ''}${esc(p.name)} <span class="muted">${p.heads} in the ref</span></button>`).join('');
+  return `<div class="field"><span class="label" id="refFromLbl">Which chicken is it? <span class="req">required</span></span>
+      <div class="choices" role="radiogroup" aria-labelledby="refFromLbl" data-ref-from>${buttons}</div></div>`;
 }
 
 /** The readout, hint and button of the ref screen (Revision 12). */
@@ -302,10 +321,14 @@ function updateRefCfg() {
     if (heads !== null && grams !== null) sum = `${each}<div class="row"><span>${heads} ${heads === 1 ? 'head' : 'heads'} &middot; ${formatKg(grams)} kg into the ref</span><span></span></div>`;
   } else {
     const price = parsePesosToCentavos(c.price);
-    const avail = availableRefHeads(c.refKind, c.editKey);
-    $('#stockLine').innerHTML = `In the ref: <strong>${avail}</strong> ${avail === 1 ? 'head' : 'heads'} of ${esc(name)} available`;
+    const from = c.productId ? findProduct(c.productId)?.name ?? c.productName ?? '' : '';
+    const avail = c.productId ? availableRefHeads(c.refKind, c.productId, c.editKey) : savedRefHeads(c.refKind);
+    $('#stockLine').innerHTML = c.productId
+      ? `In the ref: <strong>${avail}</strong> ${avail === 1 ? 'head' : 'heads'} of ${esc(name)} (${esc(from)}) available`
+      : `In the ref: <strong>${avail}</strong> ${avail === 1 ? 'head' : 'heads'} of ${esc(name)}. Choose which chicken it is.`;
+    if (!hint && !c.productId) hint = 'Choose which chicken it is (B-Cull, Cull, Broiler ...).';
     if (!hint && (price === null || price <= 0)) hint = c.price ? 'Enter a price per kg above ₱0.00 (for example 90 or 92.50).' : 'Enter the price per kg.';
-    if (!hint && heads > avail) hint = `Insufficient stock. Only ${avail} ${avail === 1 ? 'head' : 'heads'} of ${name} ${avail === 1 ? 'is' : 'are'} in the ref.`;
+    if (!hint && heads > avail) hint = `Insufficient stock. Only ${avail} ${avail === 1 ? 'head' : 'heads'} of ${name} (${from}) ${avail === 1 ? 'is' : 'are'} in the ref.`;
     let total = 0;
     if (grams !== null && price !== null && price > 0) {
       total = refLine({ pricePerKgCentavos: price, weightG: grams }).lineTotal;
@@ -342,10 +365,10 @@ function renderPrep() {
   const live = prep.feather === 'LIVE';
   const current = serviceOf(prep);
   const slicing = needsSliceSize(current);
-  const service = (v) => {
+  const service = (v, i) => {
     const fee = serviceFeeText(v);
     return `<button type="button" class="choice service ${!fee ? 'free' : ''}" role="radio" aria-checked="${current === v}" data-action="prep-service" data-v="${v}">
-      <span class="svc-text"><span class="svc-name">${esc(SERVICE_LABELS[v])}</span><small>${esc(SERVICE_NOTES[v])}</small></span><span class="svc-fee">${fee || 'No fee'}</span></button>`;
+      ${i < 9 ? keyBadge(`Alt+${i + 1}`) : ''}<span class="svc-text"><span class="svc-name">${esc(SERVICE_LABELS[v])}</span><small>${esc(SERVICE_NOTES[v])}</small></span><span class="svc-fee">${fee || 'No fee'}</span></button>`;
   };
   // The slice size is only asked for by the two Slice services; every other service has nothing to choose here.
   const cutChoice = (v, checked) => `<button type="button" class="choice" role="radio" aria-checked="${checked}" data-action="prep-cut" data-v="${v}" ${slicing ? '' : 'disabled'}><span>${esc(label(v))}</span></button>`;
@@ -713,7 +736,7 @@ function buildPayload() {
       other_product_id: findOption(i.optionId)?.product.id ?? i.productId, option_id: i.optionId, quantity: i.quantity,
       ...(findOption(i.optionId)?.option.sold_by === 'PER_KG' ? { pieces: i.pieces ?? '1' } : {}),
     })),
-    ref_items: (d.refItems ?? []).map((i) => ({ kind: i.kind, heads: i.heads, weight: i.weight, price_per_kg: i.price })),
+    ref_items: (d.refItems ?? []).map((i) => ({ kind: i.kind, product_id: i.productId ?? null, heads: i.heads, weight: i.weight, price_per_kg: i.price })),
     discount: d.discount.type === 'NONE' ? undefined : { type: d.discount.type, value: d.discount.value, reason_code: d.discount.reason, note: d.discount.note },
     payment: p.method === 'NONE' ? null : {
       method: p.method, amount: pesoPlain(parseMoneyInput(p.amountEdited ? p.amount : pesoText(t.total)).value ?? 0),
@@ -801,8 +824,13 @@ function startOther(productId, existing) {
 /** Open the ref screen (Revision 12): mode 'sell' (add to the order) or 'store' (put in the ref). existing = a ref line being edited. */
 function startRef(kind, mode, existing) {
   ui.cfg = existing
-    ? { kind: 'ref', refKind: existing.kind, mode: 'sell', editKey: existing.key, value: existing.weight, heads: existing.heads ?? '1', price: existing.price ?? '', returnTo: ui.step === 'review' ? 'review' : 'pick' }
+    ? {
+      kind: 'ref', refKind: existing.kind, mode: 'sell', editKey: existing.key, value: existing.weight, heads: existing.heads ?? '1', price: existing.price ?? '',
+      productId: existing.productId ?? null, productName: existing.productName ?? '', returnTo: ui.step === 'review' ? 'review' : 'pick',
+    }
     : { kind: 'ref', refKind: kind, mode, editKey: null, value: '', heads: '1', price: '', productId: null, note: '', returnTo: 'pick' };
+  // Selling, and only one chicken has heads of this kind in the ref: it is chosen already.
+  if (!existing && mode === 'sell') { const list = refProducts(kind); if (list.length === 1) ui.cfg.productId = list[0].id; }
   ui.tab = 'advanced';
   ui.step = 'configure';
   render();
@@ -847,12 +875,16 @@ async function addFromCfg() {
   if (c.kind === 'ref') {
     if (parseWeightToGrams(c.value) === null || parseHeads(c.heads) === null) return undefined;
     if (c.mode === 'store') return storeRef();
-    if (!(parsePesosToCentavos(c.price) > 0)) return undefined;
+    if (!(parsePesosToCentavos(c.price) > 0) || !c.productId) return undefined;
     d.refItems = d.refItems ?? [];
-    const item = { key: c.editKey ?? uuid(), kind: c.refKind, name: REF_LABELS[c.refKind], heads: String(parseHeads(c.heads)), weight: c.value, price: c.price };
+    const productName = findProduct(c.productId)?.name ?? c.productName ?? '';
+    const item = {
+      key: c.editKey ?? uuid(), kind: c.refKind, name: `${REF_LABELS[c.refKind]} - ${productName}`, productId: c.productId, productName,
+      heads: String(parseHeads(c.heads)), weight: c.value, price: c.price,
+    };
     const at = d.refItems.findIndex((i) => i.key === c.editKey);
     if (at >= 0) d.refItems[at] = item; else d.refItems.push(item);
-    return finishCfg(`${REF_LABELS[c.refKind]} ${at >= 0 ? 'updated' : 'added'}`);
+    return finishCfg(`${item.name} ${at >= 0 ? 'updated' : 'added'}`);
   }
   if (c.kind === 'chicken') {
     const grams = parseWeightToGrams(c.value);
@@ -923,6 +955,10 @@ async function onClick(e) {
       $('#pieces').value = ui.cfg.pieces;
       return updateCfg();
     }
+    case 'ref-product':
+      ui.cfg.productId = Number(btn.dataset.id);
+      document.querySelectorAll('#work [data-action="ref-product"]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+      return updateCfg();
     case 'prep-service': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { service: v }); break;
     case 'prep-dara': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { dara: !ui.cfg.prep.dara }); break;
     case 'prep-cut': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { cut: v }); break;
@@ -1028,7 +1064,86 @@ function onChange(e) {
     saveDraft();
     renderPayment();
     updateSubmitState();
+    if (t.value === 'CASH' && hasKeyboard()) $('#payReceived')?.focus();   // Revision 13: type the money received next
   }
+}
+
+const press = (selector) => { const b = $(selector); if (!b || b.disabled) return false; b.click(); return true; };
+const TABS = ['advanced', 'chicken', 'other'];
+
+/**
+ * Revision 13: the keyboard shortcuts of the New order screen (the full list is in keys.js and behind the "?" key). Returns true when the
+ * key was used. Letters and digits are left alone while the cashier types in a text box (a name, a note, the search).
+ */
+function checkoutKeys(e) {
+  const typing = typingIn();
+  const plain = !e.altKey && !e.ctrlKey && !e.metaKey;
+  const onButton = !!e.target.closest?.('button, a, textarea');
+  if (e.key === 'Escape' && plain) {
+    if (ui.step === 'configure') return press('#work [data-action="cfg-back"]');
+    if (ui.step === 'review') return press('[data-action="review-back"]');
+    return false;
+  }
+  if (ui.step === 'pick') {
+    if (typing || !plain) return false;
+    if (/^[1-9]$/.test(e.key)) {
+      const card = [...document.querySelectorAll('#work .product-card')][Number(e.key) - 1];
+      if (!card) return false;
+      card.click();
+      return true;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      ui.tab = TABS[(TABS.indexOf(ui.tab) + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+      renderWork();
+      return true;
+    }
+    if (e.key === '/') { ui.tab = 'other'; renderWork(); $('#otherSearch')?.focus(); return true; }
+    if (e.key === 'Enter' && !onButton) return draftLineCount() > 0 && press('[data-action="go-review"]');
+    return false;
+  }
+  if (ui.step === 'configure') {
+    // Alt+1 ... Alt+9: the service (chicken), the selling option (other products) or which chicken (Katay / Dead)
+    if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Digit|Numpad)[1-9]$/.test(e.code)) {
+      const list = { chicken: '#prep [data-action="prep-service"]', ref: '#work [data-action="ref-product"]', other: '#work [data-action="pick-option"]' }[ui.cfg.kind];
+      const btn = [...document.querySelectorAll(list)][Number(e.code.slice(-1)) - 1];
+      if (!btn || btn.disabled) return false;
+      btn.click();
+      return true;
+    }
+    if (!plain) return false;
+    const numberBox = !typing || ['amount', 'heads', 'pieces'].includes(document.activeElement?.id);
+    if ((e.key === '+' || e.key === '-') && numberBox) {
+      const which = $('#work [data-action="heads-inc"]') ? 'heads' : $('#work [data-action="pieces-inc"]') ? 'pieces' : null;
+      return which ? press(`#work [data-action="${which}-${e.key === '+' ? 'inc' : 'dec'}"]`) : false;
+    }
+    if (typing) return false;
+    // Not in a box: digits, the point and Backspace go to the weight, like the keypad on the screen.
+    if (/^[0-9.]$/.test(e.key)) return press(`#work [data-key="${e.key}"]`);
+    if (e.key === 'Backspace') return press('#work [data-key="back"]');
+    if (e.key === 'Enter' && !onButton) return press('#addBtn');
+    return false;
+  }
+  if (ui.step === 'review') {
+    const moneyBox = ['payReceived', 'payAmount', 'discValue'].includes(document.activeElement?.id);
+    if (e.key === 'Enter' && !onButton && (e.ctrlKey || (plain && (!typing || moneyBox)))) {
+      if (press('#submitBtn')) return true;
+      if (!$('#reviewed')?.checked) { $('#reviewed')?.focus(); return true; }   // the one thing left: tick "I have reviewed"
+      return false;
+    }
+    if (typing || !plain) return false;
+    if (e.key === ' ' && !onButton && document.activeElement?.id !== 'reviewed') return press('#reviewed');
+    if (e.key === 'd' || e.key === 'D') { $('#discType')?.focus(); return true; }
+    if (e.key === 'p' || e.key === 'P') {
+      const select = $('#payMethod');
+      if (!select) return false;
+      select.selectedIndex = (select.selectedIndex + 1) % select.options.length;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    return false;
+  }
+  if (ui.step === 'done' && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'p' || e.key === 'P')) return press('[data-action="print"]');
+  return false;
 }
 
 function onKeyDown(e) {

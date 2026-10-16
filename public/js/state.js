@@ -78,7 +78,9 @@ export function priceRef(item) {
   const heads = parseHeads(item.heads ?? '1');
   const price = parsePesosToCentavos(item.price);
   if (weightG === null || heads === null || price === null || price <= 0) return null;
-  return { kind: item.kind, name: state.config?.ref_labels?.[item.kind] ?? item.kind, weightG, heads, price, ...refLine({ pricePerKgCentavos: price, weightG }) };
+  const label = state.config?.ref_labels?.[item.kind] ?? item.kind;
+  // Revision 13: the line names the chicken it came from ("Katay Chicken - B-Cull").
+  return { kind: item.kind, name: item.productName ? `${label} - ${item.productName}` : label, weightG, heads, price, ...refLine({ pricePerKgCentavos: price, weightG }) };
 }
 
 /** The optional discount as typed on the review screen: { amount, error }. */
@@ -140,16 +142,28 @@ function released() {
   return sameDay ? held : { chicken: {}, other: {} };
 }
 
-/** Heads of Katay or Dead chicken in the ref (Revision 12). Not tied to a business day. */
-export const savedRefHeads = (kind) => state.config?.stock?.ref_heads?.[kind] ?? 0;
+/** Heads of Katay or Dead chicken in the ref (Revision 12). Not tied to a business day. Revision 13: of one chicken when productId is given. */
+export const savedRefHeads = (kind, productId = null) => (productId === null
+  ? state.config?.stock?.ref_heads?.[kind] ?? 0
+  : state.config?.stock?.ref_by_product?.[kind]?.[productId] ?? 0);
+
+/** The chickens with Katay or Dead heads in the ref (Revision 13): [{ id, name, heads }], most heads first. */
+export function refProducts(kind) {
+  const by = state.config?.stock?.ref_by_product?.[kind] ?? {};
+  return Object.entries(by).map(([id, heads]) => ({ id: Number(id), name: findProduct(Number(id))?.name ?? `Chicken #${id}`, heads }))
+    .sort((a, b) => b.heads - a.heads || a.name.localeCompare(b.name));
+}
 
 /**
- * Heads of Katay or Dead chicken still available for the order being typed (not counting the line being edited). An order being changed
- * gives its own ref heads back, whatever day it was sold on.
+ * Heads of Katay or Dead chicken of one chicken product still available for the order being typed (not counting the line being edited).
+ * An order being changed gives its own ref heads back, whatever day it was sold on (one sold before Revision 13 has no chicken: its
+ * heads count for any chicken of the same kind).
  */
-export function availableRefHeads(kind, excludeKey = null) {
-  const used = (state.draft.refItems ?? []).filter((i) => i.kind === kind && i.key !== excludeKey).reduce((sum, i) => sum + (parseHeads(i.heads ?? '1') ?? 0), 0);
-  return Math.max(savedRefHeads(kind) + (state.draft?.changeOf?.held?.ref?.[kind] ?? 0) - used, 0);
+export function availableRefHeads(kind, productId, excludeKey = null) {
+  const used = (state.draft.refItems ?? []).filter((i) => i.kind === kind && i.productId === productId && i.key !== excludeKey)
+    .reduce((sum, i) => sum + (parseHeads(i.heads ?? '1') ?? 0), 0);
+  const held = state.draft?.changeOf?.held?.ref ?? {};
+  return Math.max(savedRefHeads(kind, productId) + (held[`${kind}:${productId}`] ?? 0) + (held[`${kind}:null`] ?? 0) - used, 0);
 }
 
 /** Heads of a chicken product still available for the order being typed (not counting the line being edited). */

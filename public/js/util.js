@@ -69,7 +69,19 @@ export function openDialog({ title, body, actions = [], onOpen }) {
       } finally { btn.disabled = false; }
       return undefined;
     };
+    // Revision 13 (keyboard): Enter in a box presses the main button; a question with a main (not a danger) button starts on it, so Enter
+    // confirms. A danger question (cancel an order ...) starts on the first button, so a stray Enter never does the dangerous thing.
+    const mainIndex = actions.findIndex((a) => a.kind === 'primary');
+    dlg.onkeydown = (e) => {
+      if (e.key !== 'Enter' || e.isComposing || mainIndex < 0) return;
+      const t = e.target;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.tagName === 'SELECT') return;
+      const btn = dlg.querySelector(`[data-dlg-action="${mainIndex}"]`);
+      if (btn && !btn.disabled) { e.preventDefault(); btn.click(); }
+    };
     dlg.showModal();
+    const start = mainIndex >= 0 ? dlg.querySelector(`[data-dlg-action="${mainIndex}"]`) : dlg.querySelector('[data-dlg-action="0"]');
+    (dlg.querySelector('.dlg-body input:not([type="hidden"]), .dlg-body select, .dlg-body textarea') ?? start)?.focus();
     onOpen?.(dlg);
   });
 }

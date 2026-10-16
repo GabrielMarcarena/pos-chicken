@@ -42,7 +42,7 @@ import { HttpError } from '../http.js';
 import { ROLE_RANK } from './users.js';
 import { COUNTS_AS_SALE, INVENTORY_REASONS, REF_KINDS, REF_LABELS, REF_FIELD, unitRank } from '../../shared/constants.js';
 import { parseCountToMilli, parseHeads, parseWeightToGrams, formatKg } from '../../shared/money.js';
-import { refBalance, refHeldBy, refFromRecord, addRefEntry, refSummary } from './refStock.js';
+import { refBalance, refByProduct, refKey, refHeldBy, refFromRecord, addRefEntry, refSummary } from './refStock.js';
 import { computeRow, checkRow, insufficientStockMessage, isEmptyRow, LOSS_FIELDS, LOSS_LABELS, formatQty } from '../../shared/inventory.js';
 import { toBusinessDate, toPhtDateTime } from '../time.js';
 
@@ -66,9 +66,16 @@ function nextDate(db, now) {
   return last && last >= today ? addDays(last, 1) : today;
 }
 
-/** The open business day. If there is none yet (a new install, or the first start after the upgrade) one is opened. Call inside tx(). */
+/**
+ * The open business day. If there is none yet (a new install, or the first start after the upgrade) one is opened. Revision 13: an open
+ * day whose date has passed (the clock went past midnight) is saved and closed first, and today is opened. Call inside tx().
+ */
 export function ensureOpenDay(db, now, userId = null) {
   const day = openDay(db);
+  if (day && day.business_date < toBusinessDate(now)) {
+    autoClose(db, day, now);
+    return openDay(db);
+  }
   if (day) return day;
   db.prepare("INSERT INTO business_days (business_date, status, opened_at, opened_by) VALUES (?, 'OPEN', ?, ?)").run(nextDate(db, now), now.toISOString(), userId);
   return openDay(db);
@@ -143,7 +150,7 @@ function missingRecords(db, day) {
 /** The open day with a record for every active item (opening the day first if needed). Writes only when something is missing. */
 export function prepareOpenDay(db, now, user = null) {
   const day = openDay(db);
-  if (day && missingRecords(db, day) === 0) return day;
+  if (day && day.business_date >= toBusinessDate(now) && missingRecords(db, day) === 0) return day;
   return tx(db, () => {
     const d = ensureOpenDay(db, now, user?.id ?? null);
     materialize(db, d, now);
@@ -244,6 +251,8 @@ export function getInventory(db, viewer, { date } = {}, now = new Date()) {
     day: shapeDay(db, day, now), open_day: shapeDay(db, open, now), days: listDays(db),
     chicken: rows.chicken, other: rows.other,
     can_edit: canEdit(viewer) && day.status === 'OPEN', can_close: canEdit(viewer) && day.status === 'OPEN',
+    // Revision 13: the day's one saved row ("Save"), or null.
+    saved: saveStatus(db, day),
     // Submit Inventory Today: the latest submission of this day, and whether its numbers are still the day's numbers.
     submission: submissionStatus(db, day),
   };
@@ -267,7 +276,9 @@ export function stockSummary(db, now = new Date()) {
     if (o.piece) other_stock_of[o.kg] = o.piece;
   }
   // Revision 12: heads of Katay and Dead chicken in the ref (not tied to a business day).
-  return { business_day_id: day.id, business_date: day.business_date, stale: day.business_date < toBusinessDate(now), chicken_heads, other_milli, other_stock_of, ref_heads: refBalance(db) };
+  return { business_day_id: day.id, business_date: day.business_date, stale: day.business_date < toBusinessDate(now), chicken_heads, other_milli, other_stock_of, ref_heads: refBalance(db),
+    // Revision 13: the same heads per chicken product, so the cashier picks which one is sold
+    ref_by_product: refByProduct(db) };
 }
 
 // ---- The stock check for a new order --------------------------------------------------------------
@@ -291,9 +302,14 @@ export function demandOf(draft) {
     e.milli += byPiece ? l.pieces * 1000 : l.quantityMilli;
     other.set(id, e);
   }
-  // Revision 12: Katay and Dead chicken sold from the ref, in heads per kind.
+  // Revision 12: Katay and Dead chicken sold from the ref, in heads. Revision 13: per kind and chicken product (key "KATAY:3").
   const ref = new Map();
-  for (const l of draft.refLines ?? []) ref.set(l.kind, (ref.get(l.kind) ?? 0) + l.heads);
+  for (const l of draft.refLines ?? []) {
+    const k = refKey(l.kind, l.productId);
+    const e = ref.get(k) ?? { kind: l.kind, productId: l.productId, product: l.productName, heads: 0 };
+    e.heads += l.heads;
+    ref.set(k, e);
+  }
   return { chicken, other, ref };
 }
 
@@ -317,10 +333,11 @@ export function assertStock(db, day, demand, now, released = { chicken: new Map(
   const problems = [];
   // The ref is not tied to a business day: an order being replaced always gives its ref heads back (released.ref).
   if (demand.ref?.size) {
-    const inRef = refBalance(db);
-    for (const [kind, heads] of demand.ref) {
-      const available = inRef[kind] + (released.ref?.get(kind) ?? 0);
-      if (heads > available) problems.push(`Insufficient stock. Only ${available} ${available === 1 ? 'head' : 'heads'} of ${REF_LABELS[kind]} ${available === 1 ? 'is' : 'are'} in the ref.`);
+    const inRef = refByProduct(db);
+    for (const [k, want] of demand.ref) {
+      // An order sold before Revision 13 being replaced: its heads (no product) are free for any chicken of the same kind.
+      const available = (inRef[want.kind][want.productId] ?? 0) + (released.ref?.get(k) ?? 0) + (released.ref?.get(refKey(want.kind, null)) ?? 0);
+      if (want.heads > available) problems.push(`Insufficient stock. Only ${available} ${available === 1 ? 'head' : 'heads'} of ${REF_LABELS[want.kind]} (${want.product}) ${available === 1 ? 'is' : 'are'} in the ref.`);
     }
   }
   for (const [id, want] of demand.chicken) {
@@ -424,7 +441,7 @@ export function updateRecord(db, user, id, body, now = new Date()) {
         if (diff < 0) {
           const out = Math.min(-diff, refFromRecord(db, rec.id, kind));
           if (out > 0) {
-            const inRef = refBalance(db)[kind];
+            const inRef = refByProduct(db)[kind][rec.product_id] ?? 0;   // Revision 13: this chicken's part of the ref
             if (out > inRef) {
               throw new HttpError(409, `${out} ${out === 1 ? 'head' : 'heads'} of this ${FIELD_LABEL[f]} ${out === 1 ? 'was' : 'were'} put in the ref, but only ${inRef} ${REF_LABELS[kind]} ${inRef === 1 ? 'is' : 'are'} still in the ref (the rest were sold). ${FIELD_LABEL[f]} cannot go that low.`, 'REF_SOLD');
             }
@@ -631,9 +648,9 @@ export function closeOpenDay(db, user, day, notices, now) {
   for (const r of records) {
     db.prepare('UPDATE inventory_records SET sold_milli = ?, rev = rev + 1, updated_at = ? WHERE id = ?').run(soldOf({ ...r, sold_milli: null }, maps), now.toISOString(), r.id);
   }
-  db.prepare("UPDATE business_days SET status = 'CLOSED', closed_at = ?, closed_by = ? WHERE id = ?").run(now.toISOString(), user.id, day.id);
+  db.prepare("UPDATE business_days SET status = 'CLOSED', closed_at = ?, closed_by = ? WHERE id = ?").run(now.toISOString(), user?.id ?? null, day.id);
 
-  const fresh = ensureOpenDay(db, now, user.id);
+  const fresh = ensureOpenDay(db, now, user?.id ?? null);
   for (const r of records) ensureRecord(db, fresh, r.kind, r.kind === 'CHICKEN' ? r.product_id : r.option_id, now);
   materialize(db, fresh, now);
   const standby = notices.find((n) => n.code === 'STANDBY_ORDERS');
@@ -642,6 +659,75 @@ export function closeOpenDay(db, user, day, notices, now) {
     closed: shapeDay(db, db.prepare('SELECT * FROM business_days WHERE id = ?').get(day.id), now), opened: shapeDay(db, fresh, now),
     standby_orders: standby?.count ?? 0, complete_orders_cleared: complete?.count ?? 0, records_carried: records.length,
   };
+}
+
+// ---- Save, and the automatic close at midnight (Revision 13) ---------------------------------------------------------
+
+/** The numbers of one row as kept in a save. */
+const saveRow = (r) => ({
+  kind: r.kind, item_id: r.item_id, name: r.name, unit: r.unit, beginning: r.beginning, additional: r.additional, total: r.total, sold: r.sold, left: r.left,
+  ...(r.kind === 'CHICKEN' ? { reject: r.reject, katay: r.katay, dead: r.dead, pull_out: r.pull_out } : {}), new_total: r.new_total,
+});
+
+/** Write the day's one save row (a new one, or replacing the earlier save of the same day). Call inside tx(), on the open day. */
+function writeSave(db, day, userId, how, now) {
+  const rows = rowsFor(db, day);
+  const snapshot = { chicken: rows.chicken.map(saveRow), other: rows.other.map(saveRow), edits: beginningEdits(db, day.id) };
+  db.prepare(`INSERT INTO inventory_saves (business_day_id, saved_at, saved_by, how, fingerprint, snapshot) VALUES (?,?,?,?,?,?)
+              ON CONFLICT(business_day_id) DO UPDATE SET saved_at = excluded.saved_at, saved_by = excluded.saved_by, how = excluded.how,
+                fingerprint = excluded.fingerprint, snapshot = excluded.snapshot`)
+    .run(day.id, now.toISOString(), userId, how, dayFingerprint(db, day), JSON.stringify(snapshot));
+}
+
+/** The save of a day for the screen: when, by whom, and whether the numbers changed since. Null when the day was never saved. */
+export function saveStatus(db, day) {
+  const s = db.prepare('SELECT s.*, u.display_name AS by_name FROM inventory_saves s LEFT JOIN users u ON u.id = s.saved_by WHERE s.business_day_id = ?').get(day.id);
+  if (!s) return null;
+  return {
+    saved_at: s.saved_at, by: s.by_name ?? null, how: s.how,
+    current: day.status === 'CLOSED' || s.fingerprint === dayFingerprint(db, day),
+  };
+}
+
+/** The "Save" button: keep the open day's numbers in the database, one row per day (saving again replaces it). Manager and admin. */
+export function saveDay(db, user, now = new Date()) {
+  if (!canEdit(user)) throw new HttpError(403, 'Only a manager or the admin can save the inventory.', 'FORBIDDEN');
+  prepareOpenDay(db, now, user);
+  return tx(db, () => {
+    const day = ensureOpenDay(db, now, user.id);
+    materialize(db, day, now);
+    writeSave(db, day, user.id, 'MANUAL', now);
+    return { business_date: day.business_date, saved: saveStatus(db, day) };
+  });
+}
+
+/** The saved numbers of one business day (the open day's latest save, or a closed day's final save). */
+export function savedDay(db, date) {
+  const day = db.prepare('SELECT * FROM business_days WHERE business_date = ?').get(String(date ?? ''));
+  if (!day) throw new HttpError(404, 'There is no business day for that date.', 'NOT_FOUND');
+  const s = db.prepare('SELECT s.*, u.display_name AS by_name FROM inventory_saves s LEFT JOIN users u ON u.id = s.saved_by WHERE s.business_day_id = ?').get(day.id);
+  if (!s) throw new HttpError(404, `Business day ${day.business_date} was never saved.`, 'NOT_FOUND');
+  return { business_date: day.business_date, status: day.status, saved_at: s.saved_at, by: s.by_name ?? null, how: s.how, ...JSON.parse(s.snapshot) };
+}
+
+/**
+ * The midnight close. The open day's date has passed, so it is saved one last time (how AUTO_CLOSE) and closed, and today is opened with
+ * every New Total carried forward as the Beginning Balance. Nothing can stop it: an Ongoing order stays on the Order List (like a Standby
+ * one) and a New Total below zero starts the next day at 0. If the app was off for some days, it closes the old day once and opens today.
+ * Call inside tx().
+ */
+function autoClose(db, day, now) {
+  materialize(db, day, now);
+  writeSave(db, day, null, 'AUTO_CLOSE', now);
+  return closeOpenDay(db, null, day, [], now);
+}
+
+/** Close the open day if midnight has passed. Safe to call any time (the server calls it every minute). Returns the closed date or null. */
+export function autoCloseIfDue(db, now = new Date()) {
+  const day = openDay(db);
+  if (!day || day.business_date >= toBusinessDate(now)) return null;
+  tx(db, () => ensureOpenDay(db, now));
+  return day.business_date;
 }
 
 /**

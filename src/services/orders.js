@@ -81,7 +81,7 @@ export function presentOrder(o, viewer) {
     })),
     // Revision 12: Katay and Dead chicken sold from the ref (price per kg typed by the cashier, no service fee).
     ref_items: (o.ref_items ?? []).map((i) => ({
-      line_no: i.line_no, kind: i.ref_kind, product_name: i.product_name, heads: i.heads, weight_g: i.weight_g,
+      line_no: i.line_no, kind: i.ref_kind, product_name: i.product_name, product_id: i.product_id ?? null, heads: i.heads, weight_g: i.weight_g,
       price_per_kg_centavos: i.price_per_kg_centavos, line_total_centavos: i.line_total_centavos,
     })),
     payments: o.payments.map((p) => ({
@@ -359,8 +359,14 @@ export function buildDraft(db, payload, config) {
     if (weightG === null) errors.push(`${tag}: enter a weight above 0 kg with at most 3 decimals.`);
     const price = parsePesosToCentavos(it.price_per_kg);
     if (price === null || price <= 0) errors.push(`${tag}: enter the price per kg (above ₱0.00).`);
-    if (heads === null || weightG === null || price === null || price <= 0) return null;
-    return { kind, name: REF_LABELS[kind], heads, weightG, price, calc: refLine({ pricePerKgCentavos: price, weightG }) };
+    // Revision 13: which chicken it is (B-Cull, Cull, Broiler ...), so the ref is counted per chicken and the Daily Report can show it.
+    const product = db.prepare('SELECT id, name FROM products WHERE id = ?').get(Number(it.product_id));
+    if (!product) errors.push(`${tag}: choose which chicken it is.`);
+    if (heads === null || weightG === null || price === null || price <= 0 || !product) return null;
+    return {
+      kind, name: `${REF_LABELS[kind]} - ${product.name}`, productId: product.id, productName: product.name,
+      heads, weightG, price, calc: refLine({ pricePerKgCentavos: price, weightG }),
+    };
   });
 
   if (needsLargeConfirm && !errors.length) {
@@ -435,9 +441,9 @@ function insertOrder(db, user, draft, { key, now, dayId, replacesId = null, reas
   for (const l of draft.otherLines) {
     insertOther.run(orderId, ++lineNo, l.option.product_id, l.option.id, l.option.product_name, l.option.unit, l.option.sold_by, l.option.price_centavos, l.quantityMilli, l.calc.lineTotal, l.pieces);
   }
-  const insertRef = db.prepare(`INSERT INTO order_ref_items (order_id, line_no, ref_kind, product_name, heads, weight_g, price_per_kg_centavos, line_total_centavos)
-                                VALUES (?,?,?,?,?,?,?,?)`);
-  for (const l of draft.refLines ?? []) insertRef.run(orderId, ++lineNo, l.kind, l.name, l.heads, l.weightG, l.price, l.calc.lineTotal);
+  const insertRef = db.prepare(`INSERT INTO order_ref_items (order_id, line_no, ref_kind, product_name, product_id, heads, weight_g, price_per_kg_centavos, line_total_centavos)
+                                VALUES (?,?,?,?,?,?,?,?,?)`);
+  for (const l of draft.refLines ?? []) insertRef.run(orderId, ++lineNo, l.kind, l.name, l.productId, l.heads, l.weightG, l.price, l.calc.lineTotal);
   if (draft.payment) {
     const p = draft.payment;
     db.prepare(`INSERT INTO payments (order_id, method, amount_centavos, received_centavos, change_centavos, paid_at, account_name, account_number, reference, recorded_by, recorded_at)

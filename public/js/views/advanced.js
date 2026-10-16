@@ -3,8 +3,9 @@
 //   Cash breakdown  how many of each bill and coin are in the drawer; the total, the expected cash and the excess or loss.
 //   Expenses        what was paid out of the drawer today (Coke 75, Bread 35 ...).
 // Everything is saved on the server, for the open business day, and goes on the Daily Report. This file only draws and asks.
+import { keyBadge } from '../keys.js';
 import { api } from '../api.js';
-import { $, esc, toast, errorBox, openDialog, formatPeso, formatKg, fmtDateTime } from '../util.js';
+import { $, esc, toast, errorBox, openDialog, formatPeso, formatKg, fmtDateTime, fmtDate, todayPH } from '../util.js';
 import { parsePesosToCentavos } from '/shared/money.js';
 import { CASH_DENOMINATIONS, MAX_CASH_PIECES, REF_LABELS, cashCountTotal } from '/shared/constants.js';
 
@@ -51,18 +52,32 @@ const showMsg = (html) => { const m = $('#advMsg'); if (m) m.innerHTML = html; }
 
 function refHtml() {
   const ref = adv.data.ref;
-  const cards = ref.kinds.map((k) => `
-    <button type="button" class="product-card ref-card ref-card--${k.kind.toLowerCase()}" data-adv="ref-pick" data-v="${k.kind}">
+  const cards = ref.kinds.map((k, i) => `
+    <button type="button" class="product-card ref-card ref-card--${k.kind.toLowerCase()}" data-adv="ref-pick" data-v="${k.kind}">${keyBadge(String(i + 1))}
       <span class="ico" aria-hidden="true"><span class="ico-fallback">${k.kind === 'KATAY' ? '🔪' : '🧊'}</span></span>
       <span class="meta"><span class="name">${esc(k.name)}</span>
         <span class="stock${k.heads === 0 ? ' stock--out' : ''}" data-ref-stock="${k.kind}">In the ref: ${k.heads} ${k.heads === 1 ? 'head' : 'heads'}</span>
+        ${(k.products ?? []).length ? `<span class="small muted" data-ref-split="${k.kind}">${k.products.map((p) => `${esc(p.product)} ${p.heads}`).join(' · ')}</span>` : ''}
         <span class="price">Store it, or sell it by the kilo</span></span>
     </button>`).join('');
-  const moves = ref.moves.length ? `<div class="table-wrap"><table class="data adv-table">
-      <thead><tr><th>When</th><th>What</th><th class="num">Heads</th><th class="num">Kg</th><th>From</th><th>By</th></tr></thead>
-      <tbody>${ref.moves.map((m) => `<tr><td class="nowrap">${esc(fmtDateTime(m.at))}</td><td>${esc(REF_LABELS[m.kind])}: ${esc(m.what)}${m.note ? ` <span class="muted">(${esc(m.note)})</span>` : ''}</td>
+  // Revision 14: the movements are grouped by day (Today, Yesterday, then the date), so yesterday's Katay / Dead is not mixed up with today's.
+  const days = [];
+  for (const m of ref.moves) {
+    if (days.at(-1)?.date !== m.date) days.push({ date: m.date, rows: [] });
+    days.at(-1).rows.push(m);
+  }
+  const moveRow = (m) => `<tr><td class="nowrap">${esc(timeOf(m.at_pht))}</td><td>${esc(REF_LABELS[m.kind])}: ${esc(m.what)}${m.note ? ` <span class="muted">(${esc(m.note)})</span>` : ''}</td>
         <td class="num ${m.heads > 0 ? 'adv-in' : m.heads < 0 ? 'adv-out' : ''}">${m.heads > 0 ? '+' : ''}${m.heads}</td><td class="num">${m.weight_g ? formatKg(m.weight_g) : ''}</td>
-        <td>${esc(m.from)}</td><td>${esc(m.by)}</td></tr>`).join('')}</tbody></table></div>`
+        <td>${esc(m.from)}</td><td>${esc(m.by)}</td></tr>`;
+  const dayHead = (d) => {
+    const inn = d.rows.filter((m) => m.heads > 0).reduce((s, m) => s + m.heads, 0);
+    const out = d.rows.filter((m) => m.heads < 0).reduce((s, m) => s - m.heads, 0);
+    return `<tr class="adv-day"><th colspan="6"><strong>${esc(dayName(d.date))}</strong> <span class="muted">${esc(fmtDate(d.date))}</span>
+      <span class="adv-day-sum"><span class="adv-in">+${inn} in</span> · <span class="adv-out">&minus;${out} sold</span></span></th></tr>`;
+  };
+  const moves = days.length ? `<div class="table-wrap"><table class="data adv-table" data-ref-moves>
+      <thead><tr><th>Time</th><th>What</th><th class="num">Heads</th><th class="num">Kg</th><th>From</th><th>By</th></tr></thead>
+      <tbody>${days.map((d) => dayHead(d) + d.rows.map(moveRow).join('')).join('')}</tbody></table></div>`
     : '<p class="muted">Nothing has been put in the ref yet.</p>';
   return `<section class="adv-section" aria-label="Ref stock">
       <div class="product-grid ref-grid">${cards}</div>
@@ -72,6 +87,19 @@ function refHtml() {
       <h3 class="mt-l">Latest ref movements</h3>
       ${moves}
     </section>`;
+}
+
+/** "Today", "Yesterday", or the weekday ("Wednesday") for an older day. */
+function dayName(date) {
+  const diff = Math.round((new Date(`${todayPH()}T00:00:00Z`) - new Date(`${date}T00:00:00Z`)) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH', { timeZone: 'UTC', weekday: 'long' });
+}
+/** "3:05 PM" from "2026-10-16 15:05" (PH time). */
+function timeOf(pht) {
+  const [h, m] = pht.slice(11, 16).split(':').map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
 }
 
 async function pickRef(kind) {

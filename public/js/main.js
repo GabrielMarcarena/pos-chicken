@@ -9,6 +9,7 @@ import { mountOrders } from './views/orders.js';
 import { mountCatalog } from './views/catalog.js';
 import { mountInventory } from './views/inventory.js';
 import { mountUsers } from './views/users.js';
+import { installShortcuts, setScreenKeys, showShortcuts, hasKeyboard } from './keys.js';
 
 const RANK = { cashier: 1, manager: 2, admin: 3 };
 const ROUTES = [
@@ -31,10 +32,12 @@ function drawTopbar(current) {
   bar.innerHTML = `
     <span class="brand">Chicken POS</span>
     <nav class="nav" aria-label="Main">${links}</nav>
-    <div class="who"><span>${esc(state.user.display_name)} <span class="muted">(${esc(state.user.role)})</span></span>
+    <div class="who">${hasKeyboard() ? '<button type="button" class="btn btn--small btn--plain" id="keysHelp" title="Keyboard shortcuts (?)">⌨ Keys</button>' : ''}
+      <span>${esc(state.user.display_name)} <span class="muted">(${esc(state.user.role)})</span></span>
       <button type="button" class="btn btn--small" id="logout">Sign out</button></div>`;
   // Tapping the tab you are already on starts that screen fresh (for example a new order after "Order saved").
   bar.querySelectorAll('.nav a').forEach((a) => { a.onclick = () => { if (location.hash === a.getAttribute('href')) route(); }; });
+  if ($('#keysHelp')) $('#keysHelp').onclick = () => showShortcuts();
   $('#logout').onclick = async () => {
     try { await api('POST', '/api/logout', {}); } catch { /* signing out locally anyway */ }
     sessionStorage.removeItem('pos-draft');
@@ -54,6 +57,7 @@ export async function route() {
   drawTopbar(allowed.path);
   document.title = `${allowed.label} - Chicken POS`;
   main().innerHTML = '';
+  setScreenKeys(null);   // the new screen sets its own keys, if it has any
   await allowed.mount(main());
   main().focus({ preventScroll: true });
 }
@@ -74,6 +78,7 @@ setUnauthorizedHandler(() => {
 });
 
 window.addEventListener('hashchange', () => { if (state.user) route(); });
+installShortcuts();
 
 (async () => {
   try {

@@ -4,6 +4,8 @@ import { openDb } from './src/db.js';
 import { createApp } from './src/app.js';
 import { bootstrapAdmin } from './src/services/users.js';
 import { seedStarterCatalog, seedRevision11Products } from './src/services/catalog.js';
+import { inventoryDir } from './src/services/inventory.js';
+import { midnightClose } from './src/services/inventoryReport.js';
 
 const config = loadConfig();
 const db = openDb(config.dbPath);
@@ -28,6 +30,19 @@ if (seedStarterCatalog(db)) console.log('Added the starter service prices and ot
 const added = seedRevision11Products(db);
 if (added.length) console.log(`Added ${added.join(', ')}. They stay hidden from the cashier until the admin sets their prices in Products.`);
 
+// Revision 13: at midnight (PH time) the Daily Inventory saves and closes by itself, and the new day starts with yesterday's New Total.
+// Checked at start (the app may have been off overnight) and every minute after.
+const closeAtMidnight = () => {
+  try {
+    const closed = midnightClose(db, new Date(), { dir: inventoryDir(config) });
+    if (closed) console.log(`Business day ${closed} was saved and closed at midnight; a new business day has started.`);
+  } catch (err) {
+    console.error(`The midnight close did not work this time (${err.message}); it is tried again in a minute.`);
+  }
+};
+closeAtMidnight();
+const midnightTimer = setInterval(closeAtMidnight, 60_000);
+
 const server = createApp({ db, config }).listen(config.port, () => {
   console.log(`Chicken POS is running at http://localhost:${config.port}  (database: ${config.dbPath})`);
 });
@@ -36,6 +51,7 @@ const server = createApp({ db, config }).listen(config.port, () => {
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     console.log('Stopping Chicken POS...');
+    clearInterval(midnightTimer);
     server.close();
     try { db.close(); } catch { /* already closed */ }
     process.exit(0);

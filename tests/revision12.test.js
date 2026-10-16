@@ -49,6 +49,7 @@ async function makeShop() {
   createUser(db, { username: 'mgr', display_name: 'Manager', role: 'manager', password: 'manager-pass-1' });
   createUser(db, { username: 'cash', display_name: 'Cashier', role: 'cashier', password: 'cashier-pass-1' });
   const whole = createProduct(db, adminUser, { name: 'Whole Chicken', price: '120' }).id;
+  refProduct = whole;
   seedRevision11Products(db, START);
   const server = createApp({ db, config, clock: () => clock.now }).listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -111,7 +112,9 @@ const sheetRows = (xml) => [...xml.matchAll(/<row r="\d+"[^>]*>(.*?)<\/row>/g)].
   .filter((v) => v !== null));
 
 
-const ref = (kind, heads, kg, price) => ({ kind, heads, weight: String(kg), price_per_kg: String(price) });
+// Revision 13: a ref sale names the chicken it came from (the tests store everything from Whole Chicken unless they say otherwise).
+let refProduct = null;
+const ref = (kind, heads, kg, price, productId = refProduct) => ({ kind, heads, weight: String(kg), price_per_kg: String(price), product_id: productId });
 const store = (shop, who, kind, heads, kg, product = shop.whole) => who.call('POST', '/api/ref/store', { kind, product_id: product, heads, weight: String(kg) });
 const refHeads = async (shop, kind) => (await shop.cashier.call('GET', '/api/advanced')).data.ref.kinds.find((k) => k.kind === kind).heads;
 const money = async (shop, who = shop.cashier) => (await who.call('GET', '/api/advanced')).data.money;
@@ -366,7 +369,8 @@ test('Daily Report: Katay/Dead (REF) block, expense rows, LESS EXPENSES, the cas
 
     const files = await reportFiles(shop);
     const form = files['xl/worksheets/sheet1.xml'];
-    for (const text of ['KATAY / DEAD (REF)', 'EXPENSES', 'Coke', 'Bread', 'Gas', 'LESS EXPENSES', 'CASH BREAKDOWN', 'OVERALL TOTAL', 'LESS NON-CASH PAYMENTS', 'EXPECTED CASH', 'EXCESS/LOSS']) {
+    // Revision 14: the Katay sits inside the block of the chicken it came from (Whole Chicken has no category, so it has a block of its own)
+    for (const text of ['WHOLE CHICKEN: KATAY (from the ref), no service fee', 'KATAY', 'EXPENSES', 'Coke', 'Bread', 'Gas', 'LESS EXPENSES', 'CASH BREAKDOWN', 'OVERALL TOTAL', 'LESS NON-CASH PAYMENTS', 'EXPECTED CASH', 'EXCESS/LOSS']) {
       assert.ok(form.includes(text), text);
     }
     assert.match(form, /<f>[^<]*<\/f><v>840<\/v>/, 'EXCESS/LOSS is a formula worth 840');
@@ -379,7 +383,7 @@ test('Daily Report: Katay/Dead (REF) block, expense rows, LESS EXPENSES, the cas
     assert.ok(forCash.includes('Coke') && !forCash.includes('Gas'));
     const forMgr = (await reportFiles(shop, `&cashier=${mgrId}`))['xl/worksheets/sheet1.xml'];
     assert.ok(forMgr.includes('Gas') && !forMgr.includes('Coke'));
-    assert.ok(!forMgr.includes('KATAY / DEAD (REF)'), 'the manager sold no ref chicken');
+    assert.ok(!forMgr.includes('Katay (from the ref)'), 'the manager sold no ref chicken');
     // before any count the EXCESS/LOSS stays empty
     const empty = await makeShop();
     try {
@@ -493,12 +497,21 @@ test('upgrade to version 10: a safety copy is made first, the data is unchanged,
   const before = JSON.stringify(first.prepare('SELECT * FROM products ORDER BY id').all());
   first.close();
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.equal(JSON.stringify(db.prepare('SELECT * FROM products ORDER BY id').all()), before, 'the data is unchanged');
   for (const t of ['ref_stock_entries', 'order_ref_items', 'cash_counts', 'expenses']) assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0);
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v10-.*\.bak$/.test(f)), 'a safety copy was made first');
   db.close();
-  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 10, 'a second start changes nothing');
+  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 11, 'a second start changes nothing');
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).length, 1, 'and makes no second copy');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('Daily report: the X-Order-Count header says 0 when the date has no sales', async () => {
+  const shop = await makeShop();
+  try {
+    const res = await shop.manager.call('GET', '/api/daily-report.xlsx?date=2026-01-01');
+    assert.equal(res.status, 200);
+    assert.equal(res.headers?.['x-order-count'] ?? res.headers?.get?.('x-order-count'), '0');
+  } finally { await shop.close?.(); }
 });

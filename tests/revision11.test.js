@@ -276,7 +276,7 @@ test('Katay and Dead as inventory losses: their own columns, never a sale and ne
     for (const o of shop.db.prepare("SELECT id FROM orders WHERE fulfillment_status = 'ONGOING' AND status = 'COMPLETED'").all()) await shop.move(o.id, 'COMPLETE');
     assert.equal((await shop.submit('2026-10-15')).status, 201);
     shop.clock.now = new Date('2026-10-16T01:00:00Z');
-    assert.equal((await shop.close2('2026-10-15')).status, 200);
+    assert.equal((await shop.manager.call('GET', '/api/inventory')).data.day.business_date, '2026-10-16');   // Revision 13: closed by itself at midnight
     const next = await shop.row('Whole Chicken');
     assert.deepEqual([next.beginning, next.katay, next.dead], [6000, 0, 0]);
   } finally { shop.close(); }
@@ -305,7 +305,7 @@ test('Submit Inventory Today: one Excel file saved on this computer and download
     assert.match(dl.headers.get('content-disposition'), new RegExp(submission.file_name.replace('.', '\\.')));
     assert.ok(dl.data.equals(fs.readFileSync(path.join(shop.dir, submission.file_name))), 'the download is the saved file, byte for byte');
     const files = readZip(dl.data);
-    assert.deepEqual(sheetNames(files), ['Inventory Today', 'Beginning Balance Edits']);
+    assert.deepEqual(sheetNames(files), ['Inventory Today']);   // Revision 13: Beginning Balance edits are notes on this sheet
     const rows = sheetRows(sheet(files, 'Inventory Today'));
     const head = rows.find((x) => x[0] === 'Chicken Product');
     assert.deepEqual(head, ['Chicken Product', 'Beginning Balance', 'Additional', 'Total', 'Sold', 'Left', 'Reject', 'Katay', 'Dead', 'Pull Out', 'New Total']);
@@ -490,7 +490,7 @@ test('Export (Revision 12, in place of Export Inventory History): one closed day
     assert.equal((await shop.set('Whole Chicken', { katay: 1 })).status, 200);
     assert.equal((await shop.submit('2026-10-15')).status, 201);
     shop.clock.now = new Date('2026-10-16T01:00:00Z');
-    assert.equal((await shop.close2('2026-10-15')).status, 200);
+    assert.equal((await shop.manager.call('GET', '/api/inventory')).data.day.business_date, '2026-10-16');   // Revision 13: closed by itself at midnight
     const before = JSON.stringify(shop.db.prepare('SELECT * FROM inventory_records ORDER BY id').all());
 
     // Revision 12: Export Inventory History is gone. A closed day has its own Export file, in the layout of the submitted file.
@@ -499,7 +499,7 @@ test('Export (Revision 12, in place of Export Inventory History): one closed day
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-disposition'), /inventory_closed_2026-10-15\.xlsx/);
     const files = readZip(res.data);
-    assert.deepEqual(sheetNames(files), ['Closed Inventory', 'Beginning Balance Edits']);
+    assert.deepEqual(sheetNames(files), ['Closed Inventory']);
     const rows = sheetRows(sheet(files, 'Closed Inventory'));
     assert.deepEqual(rows.find((r) => r[0] === 'Whole Chicken').slice(1), [10, 0, 10, 4, 6, 0, 1, 0, 0, 5], 'the closed day as it was closed');
     assert.ok(!rows.some((r) => r[0] === 'Brown Cull Chicken'), 'rows with 0 in every column are left out, like the submitted file');
@@ -592,7 +592,7 @@ test('upgrade to version 9: categories are filled in, Katay starts at 0, the his
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.deepEqual(db.prepare('SELECT name, category FROM products ORDER BY id').all().map((p) => [p.name, p.category]),
     [['B-Cull', 'BCULL'], ['Cull Chicken', 'CULL'], ['Broilers', 'BROILER'], ['Native', 'OTHER']]);
   assert.ok(db.prepare('SELECT katay_milli FROM inventory_records').all().every((r) => r.katay_milli === 0));
@@ -609,7 +609,7 @@ test('upgrade to version 9: categories are filled in, Katay starts at 0, the his
   assert.ok(inv.other.some((r) => r.name === 'Garlic - piece'));
   db.close();
   const again = openDb(file);
-  assert.equal(again.prepare('PRAGMA user_version').get().user_version, 10, 'a second start changes nothing');
+  assert.equal(again.prepare('PRAGMA user_version').get().user_version, 11, 'a second start changes nothing');
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).length, 1, 'and makes no second copy');
   again.close();
   fs.rmSync(dir, { recursive: true, force: true });

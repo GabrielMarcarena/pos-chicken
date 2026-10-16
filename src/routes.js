@@ -11,7 +11,7 @@ import {
 import { createOrder, getOrder, listOrders, listBoard, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
 import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
-import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef } from './services/inventory.js';
+import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef, saveDay, savedDay } from './services/inventory.js';
 import { submitInventory, submissionFile, closeAndSubmit, closedDayExport } from './services/inventoryReport.js';
 import { refSummary } from './services/refStock.js';
 import { dayMoney, saveCashCount, addExpenses, removeExpense } from './services/cashbook.js';
@@ -110,6 +110,10 @@ export function registerRoutes(r) {
     const file = submissionFile(ctx.db, idParam(ctx), dir(ctx).dir);
     return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${file.name}"` }, body: file.body } };
   });
+  // Save (Revision 13): keep the open day's numbers in the database, one row per day. Saving again replaces it.
+  r.add('POST', '/api/inventory/save', 'manager', (ctx) => saveDay(ctx.db, ctx.user, ctx.now()));
+  r.add('GET', '/api/inventory/saved', 'cashier', (ctx) => savedDay(ctx.db, dateQuery(ctx)));
+  // Revision 13: the screen no longer has a close button (the day closes by itself at midnight). The close routes stay for the tests.
   // Closed Inventory Today and Reset the Day. Revision 12: with submit: true (what the screen sends) the inventory is submitted and the day
   // closed in ONE step. Without it, the Revision 11 rule applies: the day's inventory must already be submitted with its final numbers.
   r.add('GET', '/api/inventory/close-check', 'manager', (ctx) => closeCheck(ctx.db, ctx.user, ctx.now(), { ...dir(ctx), submitting: ctx.query.submit === '1' }));
@@ -166,7 +170,9 @@ export function registerRoutes(r) {
   const dailyName = (args, ext) => `daily-sales-report_${args.date}${args.cashierId ? `_cashier-${args.cashierId}` : ''}.${ext}`;
   r.add('GET', '/api/daily-report.xlsx', 'cashier', (ctx) => {
     const args = dailyArgs(ctx);
-    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"` }, body: buildDailyXlsx(gatherDaily(ctx.db, args)) } };
+    const data = gatherDaily(ctx.db, args);
+    // X-Order-Count lets the screen say so when the report has no sales in it.
+    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"`, 'X-Order-Count': String(data.orderCount) }, body: buildDailyXlsx(data) } };
   });
   // Who can be picked in the report's cashier filter.
   r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active).map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));

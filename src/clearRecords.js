@@ -18,7 +18,8 @@ const ORDER_TABLES = ['order_events', 'payments', 'order_ref_items', 'order_othe
 // Revision 11: the submitted inventories ("Submit Inventory Today") of the closed days go with them (their files on disk are left alone).
 // The open day keeps its submissions; its numbers change when its orders go, so it has to be submitted again before it can be closed.
 // Revision 12: the ref stock entries, cash counts and expenses of the closed days go with them too; the open day keeps its own.
-const DAY_TABLES = ['ref_stock_entries', 'cash_counts', 'expenses'];
+// Revision 13: and the saved inventory ("Save", and the final save made at midnight) of the closed days.
+const DAY_TABLES = ['ref_stock_entries', 'cash_counts', 'expenses', 'inventory_saves'];
 const INVENTORY_TABLES = [...DAY_TABLES, 'inventory_submissions', 'inventory_events', 'inventory_records', 'business_days'];
 const PROTECTED_TABLES = [...ORDER_TABLES, ...INVENTORY_TABLES];
 const closedRecords = "SELECT r.id FROM inventory_records r JOIN business_days d ON d.id = r.business_day_id WHERE d.status = 'CLOSED'";

@@ -1,6 +1,6 @@
 // Order history: find an order by number, see exactly what was saved, and cancel, change or refund it.
 import { api, download } from '../api.js';
-import { state, saveDraft, newDraft, refreshConfig, stockOptionOf } from '../state.js';
+import { state, saveDraft, newDraft, refreshConfig, stockOptionOf, findProduct } from '../state.js';
 import { $, esc, label, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
 import { REASONS, ACTION_LABELS, PAYMENT_METHODS, STATUS_LABELS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE } from '/shared/constants.js';
 import { orderTable } from './slip.js';
@@ -64,11 +64,21 @@ export async function mountOrders(root) {
     $('#viewHint').textContent = viewHint();
     load();
   };
+  // The report date starts on the open business day, which can be later than today's date if a day was closed early.
+  let openDay = null;
+  api('GET', '/api/board').then((b) => { openDay = b.open_day; if (openDay) $('#dDate').value = openDay; }).catch(() => {});
   $('#dailyXlsx').onclick = async () => {
     $('#dailyError').innerHTML = '';
     const qs = new URLSearchParams({ date: $('#dDate').value || todayPH() });
     if (isManager() && $('#dCashier').value) qs.set('cashier', $('#dCashier').value);
-    try { await download(`/api/daily-report.xlsx?${qs}`, 'daily-sales-report.xlsx'); toast('Daily report downloaded.', 'ok'); }
+    try {
+      let count = null;
+      await download(`/api/daily-report.xlsx?${qs}`, 'daily-sales-report.xlsx', (res) => { const h = res.headers.get('X-Order-Count'); count = h === null ? null : Number(h); });
+      if (count === 0) {
+        const open = openDay ? ` The open business day is ${openDay}; try that date.` : '';
+        $('#dailyError').innerHTML = `<div class="error-box" role="alert"><strong>No sales on ${esc(qs.get('date'))}, so the downloaded report is empty. Reports follow the business day the order was sold on, not the calendar date.${esc(open)}</strong></div>`;
+      } else toast('Daily report downloaded.', 'ok');
+    }
     catch (err) { $('#dailyError').innerHTML = errorBox(err); }
   };
   if (isManager()) {
@@ -268,8 +278,10 @@ async function startChange(order) {
     ...(i.sold_by === 'PER_KG' ? { pieces: String(i.pieces ?? 1) } : {}),
   }));
   // Revision 12: Katay / Dead chicken from the ref keep their heads, kilos and the price per kg that was typed.
+  // Revision 13: and the chicken they came from (an order sold before Revision 13 has none: the cashier picks it again).
   draft.refItems = (order.ref_items ?? []).map((i) => ({
-    key: uuid(), kind: i.kind, name: i.product_name, heads: String(i.heads), weight: formatThousandths(i.weight_g),
+    key: uuid(), kind: i.kind, name: i.product_name, productId: i.product_id ?? null, productName: i.product_id ? findProduct(i.product_id)?.name ?? i.product_name.split(' - ').slice(1).join(' - ') : '',
+    heads: String(i.heads), weight: formatThousandths(i.weight_g),
     price: `${Math.floor(i.price_per_kg_centavos / 100)}.${String(i.price_per_kg_centavos % 100).padStart(2, '0')}`,
   }));
   const dsc = order.discount;
@@ -280,7 +292,7 @@ async function startChange(order) {
   draft.customerNumber = order.customer_number === 'WALK-IN' ? '' : order.customer_number;
   // What this order holds in stock right now: it is replaced by the new order, so its own stock counts as free for the replacement.
   const held = { chicken: {}, other: {}, ref: {} };
-  for (const i of order.ref_items ?? []) held.ref[i.kind] = (held.ref[i.kind] ?? 0) + i.heads;
+  for (const i of order.ref_items ?? []) held.ref[`${i.kind}:${i.product_id ?? null}`] = (held.ref[`${i.kind}:${i.product_id ?? null}`] ?? 0) + i.heads;
   for (const i of order.items) held.chicken[i.product_id] = (held.chicken[i.product_id] ?? 0) + i.heads;
   for (const i of order.other_items) {
     // the stock row it was counted on: a by-the-kilo line with pieces counted on the product's piece row

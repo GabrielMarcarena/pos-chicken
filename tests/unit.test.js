@@ -372,7 +372,7 @@ test('upgrade 2 -> 3: a version 2 database with orders keeps every order, gets h
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);     // 2 -> 3 -> ... -> 9 in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);     // 2 -> 3 -> ... -> 9 in one start
   const line = db.prepare('SELECT * FROM order_items').get();
   assert.deepEqual([line.weight_g, line.line_total_centavos, line.feather_prep, line.slice_size, line.heads], [3600, 25380, 'POUR', 'MEDIUM', 1]);
   assert.equal(db.prepare('SELECT order_number, total_centavos FROM orders').get().total_centavos, 25380);
@@ -410,7 +410,7 @@ test('upgrade 3 -> 4: flat service fees become per head, amounts and saved order
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   const fees = Object.fromEntries(db.prepare('SELECT code, amount_centavos, basis FROM service_fees').all().map((f) => [f.code, [f.amount_centavos, f.basis]]));
   assert.deepEqual([fees.POUR, fees.NOT_POUR, fees.DARA, fees.DUKOT], [[4500, 'per_head'], [2500, 'per_head'], [0, 'per_head'], [500, 'per_kg']]);
   assert.equal(db.prepare('SELECT total_centavos FROM orders').get().total_centavos, 29880);                  // a saved order is never recalculated
@@ -510,7 +510,7 @@ test('upgrade 4 -> 5: old orders become Complete, today\'s become Ongoing, nothi
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.equal(dump(db, tables), before, 'every line, payment, fee and audit row is byte-for-byte the same');
   const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
   assert.deepEqual(ordersAfter.map((o) => o.fulfillment_status), ['COMPLETE', 'COMPLETE', 'ONGOING', 'ONGOING']);
@@ -563,9 +563,9 @@ test('upgrade 4 -> 5: if a step fails, nothing is changed and the file stays a w
   check.close();
 });
 
-test('a new database starts at version 10, orders default to Ongoing and not bookmarked, and accounts are not deleted', () => {
+test('a new database starts at version 11, orders default to Ongoing and not bookmarked, and accounts are not deleted', () => {
   const db = openDb(':memory:');
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   db.prepare("INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES ('u','U','x','admin','t')").run();
   db.prepare("INSERT INTO orders (order_number, business_date, status, subtotal_centavos, total_centavos, cashier_id, submitted_at, submission_key) VALUES ('A','2026-10-09','COMPLETED',100,100,1,'t','k-aaaaaaaa')").run();
   assert.equal(db.prepare('SELECT fulfillment_status FROM orders').get().fulfillment_status, 'ONGOING');
@@ -612,7 +612,7 @@ test('upgrade 5 -> 6: every order starts un-bookmarked, every account starts un-
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.equal(dump(db, tables), before, 'every line, payment, fee, session and audit row is byte-for-byte the same');
   const usersAfter = db.prepare('SELECT * FROM users ORDER BY id').all();
   assert.ok(usersAfter.every((u) => u.deleted_at === null));
@@ -714,7 +714,7 @@ test('upgrade 6 -> 7: every order keeps all its data and gets its business day, 
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
   assert.equal(dump(db, tables), before, 'every line, fee, session, user and audit row is byte-for-byte the same');
 
   // orders: every old column unchanged; the only new column is business_day_id

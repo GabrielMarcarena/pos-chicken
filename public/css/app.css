@@ -439,7 +439,7 @@ table.inv .inv-input, .inv-input { width: 5.5rem; max-width: 100%; display: inli
 .inv-buttons .btn { min-height: 48px; font-weight: 700; }
 .inv-begin { white-space: nowrap; }
 .inv-prev { margin-left: .35rem; color: var(--muted); font-style: italic; font-size: .88rem; }
-.inv-why { display: block; margin-top: .15rem; font-size: .78rem; color: var(--amber); font-weight: 600; text-align: right; white-space: normal; max-width: 12rem; margin-left: auto; }
+.inv-why { display: none; margin-top: .15rem; font-size: .78rem; color: var(--amber); font-weight: 600; text-align: right; white-space: normal; max-width: 12rem; margin-left: auto; }
 .inv-hidden { margin-top: .8rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
 .inv-add { max-width: 380px; }
 .opt-unit { text-transform: capitalize; }
@@ -556,3 +556,68 @@ mark.hl--amber { background: linear-gradient(transparent 15%, #ffd98a 15%, #ffd9
 .exp-removed td { text-decoration: line-through; color: var(--muted); }
 .exp-removed .badge { text-decoration: none; display: inline-block; }
 @media (max-width: 560px) { .exp-line { grid-template-columns: 1fr 6.5rem auto; } }
+
+/* ---- Revision 13: keyboard shortcuts --------------------------------------------------------------------------------------------- */
+/* A small key label on a button (only drawn on devices with a keyboard; see keys.js). */
+.product-card { position: relative; }
+.key-badge { font: 700 .75rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: .2rem .4rem; border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 5px; background: var(--surface); color: var(--muted); white-space: nowrap; }
+.product-card > .key-badge { position: absolute; top: .45rem; right: .45rem; }
+.choice[aria-checked="true"] .key-badge { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .6); }
+@media (pointer: coarse) { .key-badge { display: none; } }
+.keys-title { margin: 1rem 0 .35rem; font-size: 1rem; }
+.keys-title:first-child { margin-top: 0; }
+.keys-table td { padding: .3rem .6rem; }
+.keys-table kbd { font: 700 .85rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: .15rem .45rem; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--pine-tint); }
+.choice[aria-checked="true"] .muted { color: rgba(255, 255, 255, .85); }
+
+/* ---- Revision 14: an edited Beginning Balance glows; its note is a bubble (no text under the number, so the rows stay level) ---- */
+.inv-box { position: relative; display: inline-block; max-width: 100%; border-radius: var(--radius-s); }
+.inv-box--edited { box-shadow: 0 0 0 3px rgba(245, 180, 40, .55), 0 0 12px 3px rgba(245, 180, 40, .65); cursor: help; }
+.inv-box--edited .inv-input { border-color: var(--amber); background: #fffaf0; }
+.inv-pen { position: absolute; top: -9px; left: -9px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: var(--amber); color: #fff; font-size: .68rem; line-height: 1; pointer-events: none; }
+.inv-tip { position: fixed; z-index: 60; max-width: min(18rem, calc(100vw - 16px)); padding: .6rem .8rem; border-radius: var(--radius-m); background: #26211a; color: #fff;
+  font-size: .85rem; line-height: 1.4; white-space: pre-line; box-shadow: 0 6px 22px rgba(0, 0, 0, .3); pointer-events: none; }
+.inv-tip[hidden] { display: none; }
+.inv-tip::first-line { font-weight: 800; color: #ffd36b; }
+
+/* ---- Revision 14: ref movements grouped by day ---- */
+.adv-table tr.adv-day th { background: var(--pine-tint); text-align: left; padding: .5rem .7rem; border-top: 2px solid var(--pine); }
+.adv-day-sum { float: right; font-weight: 700; }
+
+/* ---- Revision 14: alignment with the key labels ---- */
+/* Service buttons: the label (when there is one), the name and the fee each have their own column, so every name starts at the same place. */
+.choice.service { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: .8rem; }
+.choice.service > .key-badge { grid-column: 1; grid-row: 1; justify-self: start; }
+@media (pointer: fine) {
+  .choice.service { grid-template-columns: 3.7rem minmax(0, 1fr) auto; }
+  .choice.service > .svc-text { grid-column: 2; }
+  .choice.service > .svc-fee { grid-column: 3; }
+}
+.choice.service > .svc-text { text-align: left; }
+/* Other selling options and "which chicken": the label is pinned to the left of a centred name. */
+.choice:has(> .key-badge) { position: relative; padding-left: 4.2rem; padding-right: 1rem; }
+.choice:has(> .key-badge) > .key-badge { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); }
+.choice.service:has(> .key-badge) { position: static; padding-left: .9rem; }
+.choice.service > .key-badge { position: static; transform: none; }
+/* Product cards: the number sits in the corner, and only the name leaves room for it (so the price and stock lines keep their width). */
+.product-card:has(> .key-badge) .name { padding-right: 1.7rem; }
+/* On a narrow window (or a phone) the key labels would crowd the names: they are not drawn there. */
+@media (max-width: 700px) {
+  .key-badge { display: none !important; }
+  .choice:has(> .key-badge), .choice.service { padding-left: .9rem; }
+  .choice.service, .choice.service:has(> .key-badge) { grid-template-columns: minmax(0, 1fr) auto; }
+  .choice.service > .svc-text { grid-column: 1; }
+  .choice.service > .svc-fee { grid-column: 2; }
+}
+
+/* ---- Revision 14: more alignment fixes ---- */
+.ref-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: stretch; }
+.ref-card .meta { align-content: start; }
+.field:has([data-ref-from]) { margin-bottom: 1rem; }
+/* Table headings may use two lines (they were cut off: "Chicken Cate"). */
+table.inv thead th { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+/* Ref movements: keep the columns readable on a phone; the table scrolls sideways inside its box. */
+.adv-table { min-width: 560px; }
+.adv-table td:nth-child(2) { min-width: 15rem; }
+table.inv tbody th { padding-top: .95rem; }

@@ -32,9 +32,10 @@ export async function api(method, path, body) {
 }
 
 /** Download a file (spreadsheet export) while keeping the sign-in cookie. Returns the file name that was saved. */
-export async function download(path, fallbackName) {
+export async function download(path, fallbackName, onResponse) {
   const res = await fetch(path, { credentials: 'same-origin', headers: { 'X-Requested-With': 'pos' } });
   if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => ({})));
+  onResponse?.(res);
   const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? fallbackName;
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement('a');

@@ -419,6 +419,7 @@ CREATE TABLE IF NOT EXISTS order_ref_items (
   line_no INTEGER NOT NULL CHECK (line_no >= 1),
   ref_kind TEXT NOT NULL CHECK (ref_kind IN ('KATAY','DEAD')),
   product_name TEXT NOT NULL,
+  product_id INTEGER REFERENCES products(id),               -- Revision 13: the chicken it came from (B-Cull, Cull, Broiler ...); NULL on older sales
   heads INTEGER NOT NULL CHECK (heads >= 1 AND heads <= 999),
   weight_g INTEGER NOT NULL CHECK (weight_g > 0),
   price_per_kg_centavos INTEGER NOT NULL CHECK (price_per_kg_centavos > 0),
@@ -475,9 +476,32 @@ WHEN OLD.removed_at IS NOT NULL OR NEW.removed_at IS NULL
   OR NEW.created_by <> OLD.created_by OR NEW.created_at <> OLD.created_at
   OR (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'an expense can only be removed, once, while its business day is open'); END;
+
+-- Revision 13 (version 11) ------------------------------------------------------------------------------------------------
+
+-- "Save" on the Daily Inventory: one row per business day with that day's numbers. Saving again replaces the row. At midnight the
+-- day is saved one last time (how = 'AUTO_CLOSE', saved_by NULL) and closed; from then on the row is frozen with the day.
+CREATE TABLE IF NOT EXISTS inventory_saves (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_day_id INTEGER NOT NULL UNIQUE REFERENCES business_days(id),
+  saved_at TEXT NOT NULL,
+  saved_by INTEGER REFERENCES users(id),                    -- NULL: saved by the app itself when the day closed at midnight
+  how TEXT NOT NULL CHECK (how IN ('MANUAL','AUTO_CLOSE')),
+  fingerprint TEXT NOT NULL,                                -- every number of the day when it was saved
+  snapshot TEXT NOT NULL                                    -- the saved rows and Beginning Balance edits, as JSON
+);
+CREATE TRIGGER IF NOT EXISTS inventory_saves_open_day_insert BEFORE INSERT ON inventory_saves
+WHEN (SELECT status FROM business_days WHERE id = NEW.business_day_id) <> 'OPEN'
+BEGIN SELECT RAISE(ABORT, 'only the open business day can be saved'); END;
+CREATE TRIGGER IF NOT EXISTS inventory_saves_open_day_update BEFORE UPDATE ON inventory_saves
+WHEN NEW.business_day_id <> OLD.business_day_id OR (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
+BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be changed'); END;
+CREATE TRIGGER IF NOT EXISTS inventory_saves_no_delete BEFORE DELETE ON inventory_saves
+WHEN (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
+BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be deleted'); END;
 `;
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 /** One safety copy of the file per start, taken just before the first upgrade step runs. */
 function makeBackup(db, file) {
@@ -749,6 +773,27 @@ function migrateTo10(db, backup) {
   upgrade(db, 10, () => {});
 }
 
+/**
+ * Version 10 -> 11 (Revision 13). A new table for the Daily Inventory "Save" (made by the schema step) and the chicken a Katay or Dead
+ * sale came from. Older ref sales get it only when every head of that kind ever put in the ref came from one product; otherwise it
+ * stays empty and the Daily Sales Report shows "source not recorded".
+ */
+function migrateTo11(db, backup) {
+  backup('v11');
+  upgrade(db, 11, () => {
+    const hasRef = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'order_ref_items'").get().n > 0;
+    if (!hasRef) return;   // older than version 10: the schema step creates the table with the column
+    if (!hasColumn(db, 'order_ref_items', 'product_id')) db.exec('ALTER TABLE order_ref_items ADD COLUMN product_id INTEGER REFERENCES products(id)');
+    // order_ref_items refuses updates (submitted lines never change); this one-time fill-in is done with the guard lifted.
+    db.exec('DROP TRIGGER IF EXISTS order_ref_items_no_update');
+    for (const { ref_kind: kind } of db.prepare('SELECT DISTINCT ref_kind FROM order_ref_items WHERE product_id IS NULL').all()) {
+      const sources = db.prepare('SELECT DISTINCT product_id FROM ref_stock_entries WHERE ref_kind = ? AND product_id IS NOT NULL').all(kind);
+      if (sources.length === 1) db.prepare('UPDATE order_ref_items SET product_id = ? WHERE ref_kind = ? AND product_id IS NULL').run(sources[0].product_id, kind);
+    }
+    // The schema step that follows puts the guard back.
+  });
+}
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
@@ -771,6 +816,7 @@ export function openDb(file) {
     if (version < 8) migrateTo8(db, backup);
     if (version < 9) migrateTo9(db, backup);
     if (version < 10) migrateTo10(db, backup);
+    if (version < 11) migrateTo11(db, backup);
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

@@ -1,10 +1,47 @@
 # Chicken POS
 
-A cashier screen and order records for a shop that sells chicken by weight. Cashiers pick a product, enter the live weight in kg, choose the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot), the slice size where one is asked, and With Blood, add other products such as eggs and condiments, add an optional discount, record how the customer paid (with a change calculator for cash), review, and submit. Orders are checked against a **Daily Inventory** of stock; the day's inventory is saved with **Submit Inventory Today** and the day is closed with **Closed Inventory Today and Reset the Day** on the Inventory page. An **Order List** board then tracks each order from Ongoing to Standby to Complete (picked up); its cards are compact, can be bookmarked and sorted. Every order is saved with a unique order number. Orders can be canceled, changed or refunded without losing the original record, and managers can download a spreadsheet.
+A cashier screen and order records for a shop that sells chicken by weight. Cashiers pick a product, enter the live weight in kg, choose the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot), the slice size where one is asked, and With Blood, add other products such as eggs and condiments, add an optional discount, record how the customer paid (with a change calculator for cash), review, and submit. Orders are checked against a **Daily Inventory** of stock; the day's numbers are kept with **Save**, the Excel file is made with **Submit Inventory Today**, and the day closes by itself at midnight. An **Order List** board then tracks each order from Ongoing to Standby to Complete (picked up); its cards are compact, can be bookmarked and sorted. Every order is saved with a unique order number. Orders can be canceled, changed or refunded without losing the original record, and managers can download a spreadsheet.
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 12)
+## What changed in this version (revision 14)
+
+No database change (still version 11). Where this section and the sections below disagree, **this section is the current behaviour**.
+
+**Daily Sales Report: the paper form again, with Katay / Dead per chicken.** Landscape, the chicken blocks side by side as in revision 12. Inside each block, under the live sales: a "B-CULL: KATAY (from the ref)" part and a "B-CULL: DEAD (from the ref)" part (no service fee). At the bottom of each block **LIVE, KATAY and DEAD have their own heads, kilos and amount** (never added together), then **TOTAL AMOUNT** (the money of the three). **DISCOUNTS moved out of the Others column to sit above EXPENSES.** The sheet is a **rectangle**: every column ends on the same last row, where the TOTAL AMOUNT of each block, the TOTAL AMOUNT of the expenses and **EXCESS/LOSS** all sit. Blank rows take up the slack. The top-to-bottom layout of revision 13 is gone.
+
+**Daily Inventory: an edited Beginning Balance glows.** Nothing is printed under the number any more (it pushed the rows out of line). The box has an amber glow and a small ✎; **hover it (or tap it on a phone)** to see a bubble with the reason, the note, who changed it, when, and the old number. The submitted file still lists the edits as notes.
+
+**Latest ref movements** (New order > Advanced) are grouped by day: **Today**, **Yesterday**, then the weekday, each with "+ in · − sold" for that day and only the time on each row.
+
+**Alignment pass** on every screen at desktop and phone width: the service buttons (names and fees now line up whatever the key label), the "which chicken" buttons, the product-card key numbers (they no longer squeeze the price and stock), the ref cards, table headings that were cut off ("Chicken Category"), the ref movements table on a phone. Key labels are hidden on narrow windows and touch screens.
+
+**Tests:** `npm test` runs 194 automated tests. The screens were checked in headless Chromium at 1280 px and 375 px (no sideways scroll, no page errors, the bubble, the day groups).
+
+## Earlier: revision 13
+
+The database is upgraded in place (version 10 → 11) with a safety copy first (`data/pos.db.before-v11-<time>.bak`). One table is added (`inventory_saves`) and Katay / Dead sale lines get the chicken they came from (`order_ref_items.product_id`; an older sale gets it only when every head of that kind ever stored came from one chicken). Where this section and the older sections below disagree, **this section is the current behaviour**.
+
+**Daily Inventory: Save, and the midnight close**
+- *Closed Inventory Today and Reset the Day* is gone. **Save** keeps the open day's numbers in the database, **one row per day**; pressing it again replaces that row. The screen says "Saved … by …", "changed since" or "Not saved yet". *Submit Inventory Today* stays (the Excel file).
+- At **12:00 midnight (PH time)** the open day is saved one last time and **closed by itself**, and today opens with every New Total as its Beginning Balance. The server checks every minute and at start; any request after midnight also triggers it first, so a sale never lands on yesterday. Nothing stops it: Ongoing orders stay on the Order List (like Standby), and a New Total below zero starts the next day at 0. If the app was off for some days, the old day is closed once and today opens (no empty days). Its file is saved as `backups/inventory/inventory_<date>_closed-at-midnight.xlsx`; closed days stay listed as Closed with their Export button.
+- Because a day now always closes after its date, the business date no longer runs a day ahead (the reason the 15 Oct report looked empty).
+- Beginning Balance edits are now **notes under the tables** of the submitted / exported file (who, when, reason, note), only when there was an edit. The separate "Beginning Balance Edits" sheet is gone.
+
+**Katay / Dead from the ref, per chicken.** Selling Katay or Dead asks **which chicken it is** (B-Cull, Cull, Broiler …, with how many of each are in the ref; chosen already when there is only one). The ref is counted per kind and chicken, so "Insufficient stock" names the chicken. The line reads e.g. "Katay Chicken - B-Cull". The Advanced cards show the split (e.g. "B-Cull 2 · Broiler 1").
+
+**Daily Sales Report, redesigned (replaced in revision 14 by the paper-form layout above):** one page wide, A4 portrait, top to bottom. **SUMMARY** first (each chicken type with separate Live, Katay and Dead rows: heads, kilos, amount; then eggs, others, GROSS SALES, less discounts / refunds / expenses, NET SALES), then one section per chicken type (price, the paper-form balance boxes, SOLD = live heads, the ledger with its live total, and under it that chicken's Katay and Dead from the ref, each with its own totals), then EGGS, OTHERS, DISCOUNTS, EXPENSES and the CASH BREAKDOWN. **Heads and kilos of live, Katay and Dead are never added together**; only the amounts are, in GROSS SALES. A sale from before this revision whose chicken is unknown is listed last under "KATAY / DEAD (source not recorded)".
+
+**Keyboard shortcuts** (badges on the buttons on a computer with a keyboard; hidden on touch screens; **?** or the ⌨ Keys button lists them):
+- Anywhere: **F2** New order, **F4** Order List, **F8** Orders, **F9** Daily Inventory, **Esc** back / cancel.
+- Choosing: **1–9** (top row or number pad) picks the numbered product, **← →** switch Chicken / Other products / Advanced, **/** searches other products, **Enter** reviews the order.
+- One product: digits and **.** type the weight, **+ / −** (number pad too) change the heads or pieces, **Alt+1…9** pick the service / selling option / which chicken, **Enter** adds, **Esc** cancels.
+- Review: **P** next payment method (Cash puts the cursor in Money Received), **D** discount, **Space** ticks "I have reviewed", **Enter** submits when everything is filled in (or jumps to the review tick box when that is the only thing left).
+- Order saved: **Enter** new order, **Ctrl+P** print slip. Question boxes: **Enter** = the main button, **Esc** = cancel; a dangerous question (cancel an order …) starts on the safe button.
+
+**Tests:** `npm test` runs 192 automated tests (11 new in `tests/revision13.test.js`). The screens were driven in headless Chromium (a full order with the keyboard only, the Katay chicken chooser, Save, the shortcut list, phone width 375 px). `tests/e2e.mjs` is still from an older revision and was not updated.
+
+## Earlier: revision 12
 
 The database is upgraded in place (version 9 → 10) with a safety copy first (`data/pos.db.before-v10-<time>.bak`); only new tables are added, so no order, payment, price or stock number changes. Where this section and the older sections below disagree, **this section is the current behaviour**.
 
