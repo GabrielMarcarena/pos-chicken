@@ -519,7 +519,7 @@ function renderOrderPanel() {
     ${count ? `<div>${chickenLines.join('')}${otherLines.join('')}${refLines.join('')}</div>` : '<div class="empty">Nothing added yet. Tap a product to start.</div>'}
     <div class="field mt-m"><label for="customer">Customer number <span class="muted">(optional)</span></label>
       <input id="customer" type="text" maxlength="40" value="${esc(d.customerNumber)}" placeholder="Walk-in" autocomplete="off"></div>
-    ${d.items.length ? `<div class="field mt-s"><label for="tracking">Tracking No. <span class="muted">(tag on the chicken)</span></label>
+    ${needsTag() ? `<div class="field mt-s"><label for="tracking">Tracking No. <span class="muted">(tag on the chicken)</span></label>
       <div class="tracking-row"><input id="tracking" type="text" inputmode="numeric" maxlength="3" value="${esc(d.trackingNumber)}" placeholder="Auto" autocomplete="off" aria-describedby="trackingHint">
         <button type="button" class="btn btn--small" data-action="tracking-auto" title="Pick the lowest number that is free">Auto</button></div>
       <span class="hint" id="trackingHint">1 to 100. The number stays with this order until it is Complete.</span></div>` : ''}
@@ -530,12 +530,14 @@ function renderOrderPanel() {
       <button type="button" class="btn" data-action="clear-order" ${count === 0 && !d.changeOf ? 'disabled' : ''}>Cancel current order</button>
     </div>
     <div class="mt-s"><button type="button" class="btn btn--small btn--plain" data-action="open-customer" title="Opens the screen the customer looks at. Drag it to the second monitor, then press F11.">Open customer screen</button></div>`;
-  if (!d.items.length) { if (d.trackingNumber) { d.trackingNumber = ''; saveDraft(); } } else if (!d.trackingNumber) autoTracking();
+  if (!needsTag()) { if (d.trackingNumber) { d.trackingNumber = ''; saveDraft(); } } else if (!d.trackingNumber) autoTracking();
 }
 
 // ---- Tracking number (Revision 15) -------------------------------------------------------------------
 // A chicken order carries a tag number from 1 to 100. The box is filled in with the lowest free number as soon as there is chicken in the order;
 // the cashier can type another one. The server checks it again when the order is saved, so two cashiers can never end up with the same number.
+/** Chicken sold Live is not butchered, so only an order with chicken to be prepared gets a tracking number. */
+const needsTag = () => state.draft.items.some((i) => i.prep.feather !== 'LIVE');
 let trackingBusy = false;
 async function autoTracking() {
   if (trackingBusy) return;
@@ -544,7 +546,7 @@ async function autoTracking() {
     const { tracking_number: next } = await api('GET', '/api/tracking-number/next');
     const d = state.draft;
     if (next === null) { toast('All tracking numbers 1 to 100 are in use. Mark finished orders as Complete first.', 'error'); return; }
-    if (d && d.items.length) {
+    if (d && needsTag()) {
       d.trackingNumber = String(next); saveDraft();
       const box = $('#tracking'); if (box) box.value = d.trackingNumber;
     }
@@ -627,7 +629,7 @@ function renderReview() {
       <div class="slip">
         <div class="slip-head">
           <div><div class="muted" data-slip-kind>Order Slip. Official Receipt.</div><div class="no">Order number is assigned when you submit</div></div>
-          <div class="right"><div>${esc(fmtDateTime(new Date().toISOString()))}</div><div>Customer: <strong>${esc(d.customerNumber.trim() || 'Walk-in')}</strong></div>${d.items.length ? `<div>Tracking No.: <strong class="slip-tracking">${d.trackingNumber.trim() ? `#${esc(d.trackingNumber.trim())}` : 'Auto'}</strong></div>` : ''}</div>
+          <div class="right"><div>${esc(fmtDateTime(new Date().toISOString()))}</div><div>Customer: <strong>${esc(d.customerNumber.trim() || 'Walk-in')}</strong></div>${needsTag() ? `<div>Tracking No.: <strong class="slip-tracking">${d.trackingNumber.trim() ? `#${esc(d.trackingNumber.trim())}` : 'Auto'}</strong></div>` : ''}</div>
         </div>
         <table>
           <thead><tr><th>Item</th><th>Weight or quantity</th><th class="num">Price</th><th class="num">Total</th><th class="no-print"></th></tr></thead>
@@ -782,7 +784,7 @@ function buildPayload() {
   const payload = {
     submission_key: d.submissionKey,
     customer_number: d.customerNumber.trim(),
-    ...(d.items.length ? { tracking_number: d.trackingNumber.trim() } : {}),   // empty = the server picks the lowest free number
+    ...(needsTag() ? { tracking_number: d.trackingNumber.trim() } : {}),   // empty = the server picks the lowest free number
     expected_total_centavos: t.total,
     items: d.items.map((i) => ({
       product_id: i.productId, weight: i.weight, heads: i.heads ?? '1', feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut,

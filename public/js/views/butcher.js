@@ -25,8 +25,8 @@ export async function mountButcher(root) {
   root.innerHTML = `<div class="bt">
       <header class="bt-head"><h1>BUTCHER</h1><div class="bt-head-r"><span id="btOffline" class="bt-offline" hidden>Not connected &mdash; trying again&hellip;</span><span id="btClock" class="bt-clock"></span>
         ${staff ? '<a class="bt-exit" href="#/new">Back to POS</a>' : ''}</div></header>
-      <div class="bt-grid"><section class="bt-ongoing" aria-label="Ongoing orders"><h2 class="bt-h">Ongoing <span id="btOnN" class="bt-n">0</span></h2><div id="btOn" class="bt-cards"></div></section>
-        <aside class="bt-standby" aria-label="Ready for pickup"><h2 class="bt-h bt-h--dim">Ready for pickup <span id="btStN" class="bt-n">0</span></h2><ul id="btSt" class="bt-sb"></ul></aside></div>
+      <div class="bt-grid"><section class="bt-ongoing" aria-label="Ongoing orders"><h2 class="bt-h">Ongoing <span id="btOnN" class="bt-n">0</span></h2><div id="btOn" class="bt-cards"></div><div id="btOnEmpty" class="bt-empty">No orders to prepare.</div></section>
+        <aside class="bt-standby" aria-label="Ready for pickup"><h2 class="bt-h bt-h--dim">Ready for pickup <span id="btStN" class="bt-n">0</span></h2><ul id="btSt" class="bt-sb"></ul><p id="btStEmpty" class="bt-sbempty">None waiting.</p></aside></div>
     </div>`;
   tickClock();
   clockTimer = setInterval(() => { tickClock(); refreshAges(); }, 1000);
@@ -46,9 +46,9 @@ async function load() {
     setOffline(false);
     const now = Date.now();
     for (const o of data.orders) if (!seen.has(o.id)) seen.set(o.id, firstLoad ? 0 : now);   // 0 = was already there when the screen opened
-    firstLoad = false;
     const json = JSON.stringify(data.orders);
     if (json !== lastJson) { lastJson = json; orders = data.orders; draw(); }
+    firstLoad = false;   // after the first drawing: what is already there when the screen opens simply appears; later arrivals animate
   } catch (err) {
     if (err.status === 401 || err.status === 403) { stopButcher(); return; }   // signed out: the app shows the sign-in screen
     setOffline(true);
@@ -88,7 +88,7 @@ function lineHtml(i) {
 function ongoingCard(o) {
   const at = seen.get(o.id) ?? 0;
   const fresh = at && Date.now() - at < NEW_FOR_MS;
-  return `<article class="bt-card${fresh ? ' bt-new' : ''}" data-seen="${at}" aria-label="Tracking number ${esc(tag(o))}, ${esc(who(o))}">
+  return `<article class="bt-card${fresh ? ' bt-new' : ''}" data-id="${o.id}" data-seen="${at}" aria-label="Tracking number ${esc(tag(o))}, ${esc(who(o))}">
     <div class="bt-tag" aria-hidden="true"><span class="bt-hash">#</span>${esc(tag(o))}</div>
     <div class="bt-main">
       <div class="bt-who"><span class="bt-cust">${esc(who(o))}</span><span class="bt-meta">${esc(o.order_number)} &middot; <span data-age="${esc(o.submitted_at)}">${esc(ageText(o.submitted_at))}</span></span>${fresh ? '<span class="bt-newtag">NEW</span>' : ''}</div>
@@ -97,7 +97,66 @@ function ongoingCard(o) {
 }
 
 function standbyRow(o) {
-  return `<li class="bt-sbrow"><span class="bt-sbtag">#${esc(tag(o))}</span><span class="bt-sbwho">${esc(who(o))}</span></li>`;
+  return `<li class="bt-sbrow" data-id="${o.id}"><span class="bt-sbtag">#${esc(tag(o))}</span><span class="bt-sbwho">${esc(who(o))}</span></li>`;
+}
+
+// Changes are shown smoothly, never as a jump:
+//   * an order that leaves a list (moved to Standby, or Complete) shrinks and fades away, then the cards below slide up into the gap;
+//   * an order that arrives (new, or on its way to Standby) grows and fades in;
+//   * a card whose details did not change is left alone, so nothing flickers every 3 seconds.
+const LEAVE_MS = 450;
+const ENTER_MS = 500;
+const html = (markup) => { const t = document.createElement('template'); t.innerHTML = markup.trim(); return t.content.firstElementChild; };
+const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+/** Slide the remaining items from where they were to where they are now (FLIP), so a gap closes smoothly. */
+function flip(container, change) {
+  const before = new Map([...container.children].filter((c) => c.dataset.id && !c.classList.contains('bt-leave')).map((c) => [c.dataset.id, c.getBoundingClientRect()]));
+  change();
+  if (reduceMotion()) return;
+  for (const el of container.children) {
+    const was = before.get(el.dataset.id);
+    if (!was || el.classList.contains('bt-leave')) continue;
+    const now = el.getBoundingClientRect();
+    const dx = was.left - now.left; const dy = was.top - now.top;
+    if (!dx && !dy) continue;
+    el.style.transition = 'none';
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    el.getBoundingClientRect();   // apply the starting position before the move is switched on
+    el.style.transition = 'transform .4s ease';
+    el.style.transform = '';
+    setTimeout(() => { el.style.transition = ''; }, 450);
+  }
+}
+
+function sync(container, list, build) {
+  const wanted = new Set(list.map((o) => String(o.id)));
+  const live = [...container.children].filter((c) => !c.classList.contains('bt-leave'));
+  const have = new Map(live.map((c) => [c.dataset.id, c]));
+  const leaving = live.filter((c) => !wanted.has(c.dataset.id));
+  flip(container, () => {
+    for (const el of leaving) {
+      el.classList.add('bt-leave');
+      setTimeout(() => flip(container, () => el.remove()), LEAVE_MS);
+    }
+    let prev = null;
+    for (const o of list) {
+      const hash = JSON.stringify(o);
+      let el = have.get(String(o.id));
+      if (!el) {
+        el = html(build(o));
+        el.dataset.h = hash;
+        if (!firstLoad) { el.classList.add('bt-enter'); setTimeout(() => el.classList.remove('bt-enter'), ENTER_MS); }
+      } else if (el.dataset.h !== hash) {
+        const fresh = html(build(o));
+        fresh.dataset.h = hash;
+        el.replaceWith(fresh); el = fresh;
+      }
+      const after = prev ? prev.nextElementSibling : container.firstElementChild;
+      if (el !== after) container.insertBefore(el, after);
+      prev = el;
+    }
+  });
 }
 
 function draw() {
@@ -105,6 +164,8 @@ function draw() {
   const st = orders.filter((o) => o.fulfillment_status === 'STANDBY');
   document.getElementById('btOnN').textContent = on.length;
   document.getElementById('btStN').textContent = st.length;
-  document.getElementById('btOn').innerHTML = on.length ? on.map(ongoingCard).join('') : '<div class="bt-empty">No orders to prepare.</div>';
-  document.getElementById('btSt').innerHTML = st.length ? st.map(standbyRow).join('') : '<li class="bt-sbempty">None waiting.</li>';
+  sync(document.getElementById('btOn'), on, ongoingCard);
+  sync(document.getElementById('btSt'), st, standbyRow);
+  document.getElementById('btOnEmpty').hidden = on.length > 0;
+  document.getElementById('btStEmpty').hidden = st.length > 0;
 }

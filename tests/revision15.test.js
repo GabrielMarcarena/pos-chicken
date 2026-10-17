@@ -329,3 +329,26 @@ test('upgrade to version 12: a safety copy first; old orders keep every value an
     again.close(); db.close();
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Live chicken is not butchered: an order with only Live chicken has no tracking number and never reaches the Butcher screen; a mixed order is tagged and shows only the prepared chicken', async () => {
+  const shop = await makeShop();
+  try {
+    const liveLine = (heads = 1) => chicken(shop.broiler, heads, { feather: 'LIVE', cut: 'NONE', slice_size: null });
+    const liveOnly = await shop.order(shop.cashier, [liveLine(2)]);
+    assert.equal(liveOnly.status, 201, JSON.stringify(liveOnly.data));
+    assert.equal(liveOnly.data.order.tracking_number, null);
+    const typed = await shop.order(shop.cashier, [liveLine()], { tracking_number: 5 });
+    assert.equal(typed.status, 400, 'a number on a Live-only order is refused');
+    assert.equal((await shop.cashier.call('GET', '/api/tracking-number/next')).data.tracking_number, 1, 'Live orders use up no numbers');
+
+    const mixed = await shop.order(shop.cashier, [liveLine(3), chicken(shop.broiler, 1, { feather: 'POUR', cut: 'NONE', slice_size: null })]);
+    assert.equal(mixed.status, 201, JSON.stringify(mixed.data));
+    assert.equal(mixed.data.order.tracking_number, 1);
+
+    await shop.tv.login('butcher-tv', 'butcher-pass-1');
+    const feed = (await shop.tv.call('GET', '/api/butcher')).data.orders;
+    assert.deepEqual(feed.map((o) => o.tracking_number), [1], 'only the mixed order is on the screen');
+    assert.equal(feed[0].items.length, 1, 'its Live line is not listed');
+    assert.equal(feed[0].items[0].feather, 'POUR');
+  } finally { shop.close(); }
+});

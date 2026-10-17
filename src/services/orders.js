@@ -147,7 +147,8 @@ export function listOrders(db, { q = '', from, to, status, pickup, view = 'all',
 }
 
 // ---- Tracking numbers (Revision 15) ---------------------------------------------------------------
-// A tag number from 1 to 100 marks the chicken of one order in the butcher area. It belongs to an ACTIVE order only: a real sale that is
+// A tag number from 1 to 100 marks the chicken of one order in the butcher area. Chicken sold Live is not butchered, so an order that has
+// only Live chicken (or no chicken) has no tracking number. It belongs to an ACTIVE order only: a real sale that is
 // still Ongoing or Standby. Once the order is Complete (or canceled, or replaced by a change) the number can be used again.
 export const TRACKING_MAX = 100;
 const ACTIVE_SQL = "fulfillment_status IN ('ONGOING','STANDBY') AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')";
@@ -164,6 +165,9 @@ export function nextFreeTrackingNumber(db) {
   return null;
 }
 
+/** True when at least one chicken line is prepared (anything but Live), so the order goes to the butcher and needs a tag. */
+export const needsTag = (lines) => lines.some((l) => l.prep.feather !== 'LIVE');
+
 const takenMessage = (n) => `Tracking number ${n} is already taken. Please select a different number.`;
 
 /**
@@ -171,7 +175,7 @@ const takenMessage = (n) => `Tracking number ${n} is already taken. Please selec
  * the same, so the cashier sees it first); a typed number must be free. Orders without chicken have none.
  */
 function assignTracking(db, draft) {
-  if (!draft.lines.length) return null;
+  if (!needsTag(draft.lines)) return null;
   if (draft.tracking === null) {
     const next = nextFreeTrackingNumber(db);
     if (next === null) throw new HttpError(409, `All tracking numbers 1 to ${TRACKING_MAX} are in use. Mark finished orders as Complete first.`, 'TRACKING_FULL');
@@ -227,9 +231,9 @@ export function listButcher(db) {
     SELECT o.id, o.order_number, o.customer_number, o.tracking_number, o.fulfillment_status, o.submitted_at
     FROM orders o
     WHERE o.fulfillment_status IN ('ONGOING','STANDBY') AND o.status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')
-      AND EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id)
+      AND EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id AND i.feather_prep <> 'LIVE')
     ORDER BY o.id ASC LIMIT 200`).all();
-  const chicken = db.prepare('SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? ORDER BY line_no');
+  const chicken = db.prepare("SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? AND feather_prep <> 'LIVE' ORDER BY line_no");   // Live chicken is not cut, so it is not listed
   return {
     orders: rows.map((o) => ({
       ...o,
@@ -445,7 +449,7 @@ export function buildDraft(db, payload, config) {
   let tracking = null;
   const typed = String(payload.tracking_number ?? '').trim().replace(/^#/, '');
   if (typed !== '') {
-    if (!lines.length) errors.push('A tracking number is only for orders that have chicken.');
+    if (!needsTag(lines)) errors.push('A tracking number is only for orders that have chicken to be prepared. Live chicken has none.');
     else if (!/^\d{1,3}$/.test(typed) || Number(typed) < 1 || Number(typed) > TRACKING_MAX) errors.push(`Tracking number must be a whole number from 1 to ${TRACKING_MAX}.`);
     else tracking = Number(typed);
   }

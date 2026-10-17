@@ -15,13 +15,14 @@ The database is upgraded in place (version 11 → 12) with a safety copy first (
 - Once an order is saved its number **cannot be edited** (the database itself refuses it). To fix a wrong number, use **Change order** on the Orders screen.
 - Two cashiers saving at the same moment can never get the same number: the server checks inside the same step that saves the order, and the database has a rule of its own as a second lock.
 - Moving a Complete order back to Ongoing or Standby is refused if another order is using its number now. The message says which order.
-- Only orders **with chicken** get a number. Orders with only eggs, garlic and other products have none.
+- Only orders with chicken **that is prepared** get a number. Orders with only **Live** chicken, or only eggs, garlic and other products, have none (a Live chicken is not butchered). In an order that has both, the number is for the prepared chicken.
 - It is shown **big** on the "Order saved" screen and on the printed slip, on the review slip, in the order details, on every card of the **Order List** (`#5`), and in the **Orders** list (its own column; the search box also finds `#5`). The spreadsheet exports are unchanged.
 
 **Butcher screen** (for the TV in the butcher area). It shows only what the butcher needs: no tabs, no prices, no buttons.
 - **Ongoing** orders are the screen: big cards on the left with the **tracking number**, the customer name, the order number, how long ago, and each chicken with its weight and **how to cut it** in big words (for example **DRESS & SLICE**, **MEDIUM PIECES**, **WITH BLOOD**). A new order glows yellow with "NEW" for a minute.
 - **Standby** orders (ready, waiting for the customer) are a small, dim list on the right, so they never compete with Ongoing.
-- **Complete** orders disappear. Canceled and replaced orders never show. Orders with no chicken never show.
+- **Complete** orders disappear. Canceled and replaced orders never show. Orders with no prepared chicken never show, and a **Live** line inside a mixed order is not listed.
+- Changes are **smooth**: when an order moves to Standby its card shrinks and fades out of Ongoing while a row slides into the Standby list; when it becomes Complete the row fades away; the cards below glide up into the gap. A card that did not change is left alone, so nothing flickers.
 - It checks the server every 3 seconds. If the server cannot be reached it shows "Not connected - trying again" and keeps the last orders on screen.
 - It is only for looking. The cashier still moves orders to Standby or Complete on the **Order List**.
 
@@ -46,13 +47,13 @@ The database is upgraded in place (version 11 → 12) with a safety copy first (
 Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords and keep the Wi-Fi private.
 
 **Please confirm (decisions I made).**
-1. Numbers go from **1 to 100** and the lowest free one is picked, so a number comes back quickly after its order is Complete (for example #1 again). Tell me if you would rather count upward and only wrap around after 100.
-2. **Every** order with chicken gets a number, including chicken sold **Live**. Tell me if Live orders should have none.
+1. Numbers go from **1 to 100** and the lowest free one is picked, so a number comes back quickly after its order is Complete (for example #1 again). *(You confirmed this.)*
+2. **Live** chicken gets no tracking number and is not shown to the butcher. *(You confirmed this.)*
 3. The box fills in by itself; the cashier does not have to type anything. If the box is left empty, the server picks the lowest free number.
 4. A **refunded** order that is still Ongoing or Standby keeps its number and still shows on the Butcher screen, the same as on the Order List.
-5. The Butcher screen has **no Done button**. Orders move on the Order List as before.
+5. The Butcher screen has **no Done button**; it only animates when an order changes. Orders move on the Order List as before. *(You confirmed this.)*
 
-**Tests:** `npm test` runs 207 automated tests (13 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side): all 11 checks passed.
+**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 12 checks passed.
 **Known problem, not caused by this revision:** the old browser test `npm run test:e2e` is out of date. 43 of its 67 checks already fail on revision 13 (for example it looks for the Close button that revision 13 removed). It needs updating before it is useful again.
 
 ## Earlier: revision 14
