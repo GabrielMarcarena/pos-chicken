@@ -372,7 +372,7 @@ test('upgrade 2 -> 3: a version 2 database with orders keeps every order, gets h
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);     // 2 -> 3 -> ... -> 9 in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);     // 2 -> 3 -> ... -> 9 in one start
   const line = db.prepare('SELECT * FROM order_items').get();
   assert.deepEqual([line.weight_g, line.line_total_centavos, line.feather_prep, line.slice_size, line.heads], [3600, 25380, 'POUR', 'MEDIUM', 1]);
   assert.equal(db.prepare('SELECT order_number, total_centavos FROM orders').get().total_centavos, 25380);
@@ -410,7 +410,7 @@ test('upgrade 3 -> 4: flat service fees become per head, amounts and saved order
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   const fees = Object.fromEntries(db.prepare('SELECT code, amount_centavos, basis FROM service_fees').all().map((f) => [f.code, [f.amount_centavos, f.basis]]));
   assert.deepEqual([fees.POUR, fees.NOT_POUR, fees.DARA, fees.DUKOT], [[4500, 'per_head'], [2500, 'per_head'], [0, 'per_head'], [500, 'per_kg']]);
   assert.equal(db.prepare('SELECT total_centavos FROM orders').get().total_centavos, 29880);                  // a saved order is never recalculated
@@ -504,17 +504,17 @@ test('upgrade 4 -> 5: old orders become Complete, today\'s become Ongoing, nothi
   const tables = ['users', 'products', 'service_fees', 'order_items', 'order_other_items', 'payments', 'order_events', 'price_history', 'order_counters'];
   // users gained a deleted_at column in version 6; it is empty for everyone, so it is left out of the byte-for-byte comparison
   // (products.category is new in version 9, filled in from the name; it is left out here and checked in tests/revision11.test.js)
-  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ deleted_at: _d, received_centavos: _r, change_centavos: _c, category: _k, pieces: _p, ...row }) => row)])));
+  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ deleted_at: _d, received_centavos: _r, change_centavos: _c, category: _k, pieces: _p, tracking_number: _t, ...row }) => row)])));
   const before = dump(seed, tables);
   const ordersBefore = seed.prepare('SELECT * FROM orders ORDER BY id').all();
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   assert.equal(dump(db, tables), before, 'every line, payment, fee and audit row is byte-for-byte the same');
   const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
   assert.deepEqual(ordersAfter.map((o) => o.fulfillment_status), ['COMPLETE', 'COMPLETE', 'ONGOING', 'ONGOING']);
-  ordersAfter.forEach((o, i) => { const { fulfillment_status: _f, bookmarked: _b, business_day_id: _bd, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });   // every old column unchanged
+  ordersAfter.forEach((o, i) => { const { fulfillment_status: _f, bookmarked: _b, business_day_id: _bd, tracking_number: _t, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });   // every old column unchanged
   assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
   assert.ok(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'order_events'").get().sql.includes("'MOVE'"));
@@ -563,9 +563,9 @@ test('upgrade 4 -> 5: if a step fails, nothing is changed and the file stays a w
   check.close();
 });
 
-test('a new database starts at version 11, orders default to Ongoing and not bookmarked, and accounts are not deleted', () => {
+test('a new database starts at version 12, orders default to Ongoing and not bookmarked, and accounts are not deleted', () => {
   const db = openDb(':memory:');
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   db.prepare("INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES ('u','U','x','admin','t')").run();
   db.prepare("INSERT INTO orders (order_number, business_date, status, subtotal_centavos, total_centavos, cashier_id, submitted_at, submission_key) VALUES ('A','2026-10-09','COMPLETED',100,100,1,'t','k-aaaaaaaa')").run();
   assert.equal(db.prepare('SELECT fulfillment_status FROM orders').get().fulfillment_status, 'ONGOING');
@@ -605,21 +605,21 @@ test('upgrade 5 -> 6: every order starts un-bookmarked, every account starts un-
   const { dir, file, seed } = makeVersion5Database();
   const tables = ['products', 'service_fees', 'order_items', 'order_other_items', 'payments', 'order_events', 'price_history', 'order_counters', 'sessions'];
   // (products.category and order_other_items.pieces are new in version 9; they are left out here and checked in tests/revision11.test.js)
-  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ received_centavos: _r, change_centavos: _c, category: _k, pieces: _p, ...row }) => row)])));
+  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ received_centavos: _r, change_centavos: _c, category: _k, pieces: _p, tracking_number: _t, ...row }) => row)])));
   const before = dump(seed, tables);
   const usersBefore = seed.prepare('SELECT * FROM users ORDER BY id').all();
   const ordersBefore = seed.prepare('SELECT * FROM orders ORDER BY id').all();
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   assert.equal(dump(db, tables), before, 'every line, payment, fee, session and audit row is byte-for-byte the same');
   const usersAfter = db.prepare('SELECT * FROM users ORDER BY id').all();
   assert.ok(usersAfter.every((u) => u.deleted_at === null));
   usersAfter.forEach((u, i) => { const { deleted_at: _d, ...rest } = u; assert.equal(JSON.stringify(rest), JSON.stringify(usersBefore[i])); });
   const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
   assert.ok(ordersAfter.every((o) => o.bookmarked === 0));
-  ordersAfter.forEach((o, i) => { const { bookmarked: _b, business_day_id: _bd, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });
+  ordersAfter.forEach((o, i) => { const { bookmarked: _b, business_day_id: _bd, tracking_number: _t, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });
   assert.deepEqual(ordersAfter.map((o) => o.fulfillment_status), ['COMPLETE', 'STANDBY', 'ONGOING', 'ONGOING'], 'pickup statuses untouched');
   assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
@@ -706,7 +706,7 @@ test('upgrade 6 -> 7: every order keeps all its data and gets its business day, 
   const { dir, file, seed } = makeVersion6Database();
   const tables = ['users', 'products', 'service_fees', 'order_items', 'order_other_items', 'order_events', 'price_history', 'order_counters', 'sessions'];
   // (products.category and order_other_items.pieces are new in version 9; they are left out here and checked in tests/revision11.test.js)
-  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ category: _k, pieces: _p, ...row }) => row)])));
+  const dump = (d, list) => JSON.stringify(Object.fromEntries(list.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ category: _k, pieces: _p, tracking_number: _t, ...row }) => row)])));
   const before = dump(seed, tables);
   const ordersBefore = seed.prepare('SELECT * FROM orders ORDER BY id').all();
   const paymentsBefore = seed.prepare('SELECT * FROM payments ORDER BY id').all();
@@ -714,13 +714,13 @@ test('upgrade 6 -> 7: every order keeps all its data and gets its business day, 
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   assert.equal(dump(db, tables), before, 'every line, fee, session, user and audit row is byte-for-byte the same');
 
   // orders: every old column unchanged; the only new column is business_day_id
   const ordersAfter = db.prepare('SELECT * FROM orders ORDER BY id').all();
   assert.equal(ordersAfter.length, ordersBefore.length);
-  ordersAfter.forEach((o, i) => { const { business_day_id: _d, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });
+  ordersAfter.forEach((o, i) => { const { business_day_id: _d, tracking_number: _t, ...rest } = o; assert.equal(JSON.stringify(rest), JSON.stringify(ordersBefore[i])); });
   // payments: every old column unchanged; the cash fields are empty because nothing was ever recorded for them
   const paymentsAfter = db.prepare('SELECT * FROM payments ORDER BY id').all();
   paymentsAfter.forEach((p, i) => {

@@ -377,13 +377,13 @@ test('upgrade to version 11: a safety copy first; an old Katay sale gets its chi
   first.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 11);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v11-.*\.bak$/.test(f)), 'a safety copy was made first');
   assert.equal(db.prepare('SELECT product_id FROM order_ref_items').get().product_id, bcull, 'every Katay ever stored was B-Cull');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM inventory_saves').get().n, 0);
   assert.throws(() => db.prepare('UPDATE order_ref_items SET heads = 2').run(), /cannot be changed/, 'the guard is back');
   db.close();
-  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 11, 'a second start changes nothing');
+  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 12, 'a second start changes nothing');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

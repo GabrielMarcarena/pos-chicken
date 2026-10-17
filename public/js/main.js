@@ -9,6 +9,9 @@ import { mountOrders } from './views/orders.js';
 import { mountCatalog } from './views/catalog.js';
 import { mountInventory } from './views/inventory.js';
 import { mountUsers } from './views/users.js';
+import { mountButcher, stopButcher } from './views/butcher.js';
+import { mountCustomer, unmountCustomer } from './views/customer.js';
+import { startCustomerLink } from './customerLink.js';
 import { installShortcuts, setScreenKeys, showShortcuts, hasKeyboard } from './keys.js';
 
 const RANK = { cashier: 1, manager: 2, admin: 3 };
@@ -22,6 +25,12 @@ const ROUTES = [
 ];
 
 const main = () => $('#main');
+
+// Revision 15: two screens that show only one job and never draw the top bar (no tabs):
+//   #/butcher   the TV in the butcher area. Needs a sign-in (the "display" account, or any staff to look at it).
+//   #/customer  the second monitor facing the customer. No sign-in: the cashier window sends it a summary of the order (customerLink.js).
+const isCustomerScreen = () => location.hash === '#/customer';
+function leaveDisplayScreens() { stopButcher(); unmountCustomer(); }
 
 function drawTopbar(current) {
   const bar = $('#topbar');
@@ -47,6 +56,24 @@ function drawTopbar(current) {
 }
 
 export async function route() {
+  if (isCustomerScreen()) {
+    stopButcher();
+    $('#topbar').hidden = true;
+    main().innerHTML = '';
+    mountCustomer(main());
+    return;
+  }
+  if (state.user && (state.user.role === 'display' || location.hash === '#/butcher')) {
+    // The butcher TV account can open this screen and nothing else. Staff may open it too, to see what the TV shows.
+    unmountCustomer();
+    if (state.user.role === 'display' && location.hash !== '#/butcher') location.hash = '#/butcher';
+    $('#topbar').hidden = true;
+    main().innerHTML = '';
+    setScreenKeys(null);
+    await mountButcher(main());
+    return;
+  }
+  leaveDisplayScreens();
   if (!state.user) {
     drawTopbar('');
     mountLogin(main(), async (user) => { state.user = user; await startSession(); });
@@ -63,10 +90,15 @@ export async function route() {
 }
 
 async function startSession() {
+  if (state.user.role === 'display') {   // the butcher TV: no price list, no order in progress
+    location.hash = '#/butcher';
+    return route();
+  }
   await refreshConfig(api);
   loadDraft();
+  startCustomerLink();   // from now on a Customer screen on the second monitor can follow this window
   saveDraft();
-  if (!ROUTES.some((r) => r.path === location.hash)) location.hash = '#/new';
+  if (!ROUTES.some((r) => r.path === location.hash) && location.hash !== '#/butcher') location.hash = '#/new';
   route();
 }
 
@@ -77,10 +109,11 @@ setUnauthorizedHandler(() => {
   route();
 });
 
-window.addEventListener('hashchange', () => { if (state.user) route(); });
+window.addEventListener('hashchange', () => { if (state.user || isCustomerScreen()) route(); });
 installShortcuts();
 
 (async () => {
+  if (isCustomerScreen()) { route(); return; }   // the customer window never asks the server anything
   try {
     const { user } = await api('GET', '/api/me');
     state.user = user; // null when nobody is signed in

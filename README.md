@@ -4,9 +4,60 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 14)
+## What changed in this version (revision 15): Tracking Number, Butcher screen, Customer screen
 
-No database change (still version 11). Where this section and the sections below disagree, **this section is the current behaviour**.
+The database is upgraded in place (version 11 → 12) with a safety copy first (`data/pos.db.before-v12-<time>.bak`). Old orders keep every value; they simply have no tracking number. Where this section and the sections below disagree, **this section is the current behaviour**.
+
+**Tracking Number (Change Request 1).** A tag number from **1 to 100** that marks the chicken of one order, so the butcher and the cashier never mix up two customers' chicken.
+- On **New order**, a **Tracking No.** box appears as soon as there is chicken in the order. It is filled in with the **lowest free number** by itself. Type another number if you prefer, or press **Auto** to get the lowest free one again.
+- A number belongs to **one active order at a time**. "Active" means the order is still **Ongoing or Standby**. If you use a number that is taken, the order is not saved and you see: *"Tracking number 5 is already taken. Please select a different number."* Going Back then fills in a free number.
+- The number is free again when its order is **Complete**, **canceled**, or **replaced by a change** (the replacement keeps the same number unless you pick another).
+- Once an order is saved its number **cannot be edited** (the database itself refuses it). To fix a wrong number, use **Change order** on the Orders screen.
+- Two cashiers saving at the same moment can never get the same number: the server checks inside the same step that saves the order, and the database has a rule of its own as a second lock.
+- Moving a Complete order back to Ongoing or Standby is refused if another order is using its number now. The message says which order.
+- Only orders **with chicken** get a number. Orders with only eggs, garlic and other products have none.
+- It is shown **big** on the "Order saved" screen and on the printed slip, on the review slip, in the order details, on every card of the **Order List** (`#5`), and in the **Orders** list (its own column; the search box also finds `#5`). The spreadsheet exports are unchanged.
+
+**Butcher screen** (for the TV in the butcher area). It shows only what the butcher needs: no tabs, no prices, no buttons.
+- **Ongoing** orders are the screen: big cards on the left with the **tracking number**, the customer name, the order number, how long ago, and each chicken with its weight and **how to cut it** in big words (for example **DRESS & SLICE**, **MEDIUM PIECES**, **WITH BLOOD**). A new order glows yellow with "NEW" for a minute.
+- **Standby** orders (ready, waiting for the customer) are a small, dim list on the right, so they never compete with Ongoing.
+- **Complete** orders disappear. Canceled and replaced orders never show. Orders with no chicken never show.
+- It checks the server every 3 seconds. If the server cannot be reached it shows "Not connected - trying again" and keeps the last orders on screen.
+- It is only for looking. The cashier still moves orders to Standby or Complete on the **Order List**.
+
+**Customer screen** (the second monitor facing the customer).
+- On **New order**, press **Open customer screen**. A clean window opens. Drag it to the second monitor and press **F11** for full screen.
+- It follows the cashier as they type: the items, the total, **Cash received** and **Change**. After the order is saved it says **Thank you** with the tracking number for 12 seconds. Between orders it shows a welcome.
+- It needs no internet and no sign-in. The two windows talk to each other inside the same computer, and only a small summary of the order is sent.
+
+**The Butcher TV account.** In **Users > Add user**, choose the role **Butcher TV (screen only)**, for example the username `butcher-tv`.
+- It opens the Butcher screen right after sign-in and **nothing else**: the server refuses every other page and every action. It cannot see prices, sales or products.
+- It **never signs itself out** when idle (other accounts are signed out after 4 hours) and its sign-in lasts a year, so the TV can stay on.
+- Sign in once on the TV, then leave it. To keep the screen clean, open the page full screen (kiosk mode), for example `chrome --kiosk http://<this-computer>:3000/#/butcher`.
+
+**Setting up the TV (one time).** The app runs inside WSL, which the TV cannot reach by default.
+1. Windows 11: create the file `C:\Users\<you>\.wslconfig` with these two lines, then run `wsl --shutdown` in PowerShell and start the app again:
+   ```
+   [wsl2]
+   networkingMode=mirrored
+   ```
+2. Allow the app through the Windows firewall (PowerShell as administrator): `New-NetFirewallRule -DisplayName "Chicken POS" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private`
+3. On the TV, open `http://<this computer's Wi-Fi address>:3000/#/butcher` and sign in with the Butcher TV account. (Find the address with `ipconfig`.)
+Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords and keep the Wi-Fi private.
+
+**Please confirm (decisions I made).**
+1. Numbers go from **1 to 100** and the lowest free one is picked, so a number comes back quickly after its order is Complete (for example #1 again). Tell me if you would rather count upward and only wrap around after 100.
+2. **Every** order with chicken gets a number, including chicken sold **Live**. Tell me if Live orders should have none.
+3. The box fills in by itself; the cashier does not have to type anything. If the box is left empty, the server picks the lowest free number.
+4. A **refunded** order that is still Ongoing or Standby keeps its number and still shows on the Butcher screen, the same as on the Order List.
+5. The Butcher screen has **no Done button**. Orders move on the Order List as before.
+
+**Tests:** `npm test` runs 207 automated tests (13 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side): all 11 checks passed.
+**Known problem, not caused by this revision:** the old browser test `npm run test:e2e` is out of date. 43 of its 67 checks already fail on revision 13 (for example it looks for the Close button that revision 13 removed). It needs updating before it is useful again.
+
+## Earlier: revision 14
+
+No database change (still version 11).
 
 **Daily Sales Report: the paper form again, with Katay / Dead per chicken.** Landscape, the chicken blocks side by side as in revision 12. Inside each block, under the live sales: a "B-CULL: KATAY (from the ref)" part and a "B-CULL: DEAD (from the ref)" part (no service fee). At the bottom of each block **LIVE, KATAY and DEAD have their own heads, kilos and amount** (never added together), then **TOTAL AMOUNT** (the money of the three). **DISCOUNTS moved out of the Others column to sit above EXPENSES.** The sheet is a **rectangle**: every column ends on the same last row, where the TOTAL AMOUNT of each block, the TOTAL AMOUNT of the expenses and **EXCESS/LOSS** all sit. Blank rows take up the slack. The top-to-bottom layout of revision 13 is gone.
 

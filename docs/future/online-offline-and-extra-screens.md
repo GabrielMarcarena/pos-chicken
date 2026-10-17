@@ -1,5 +1,8 @@
 # Chicken POS: review, going online, offline use, and extra screens
 
+> **Update 2026-10-18:** the Tracking Number, the Butcher screen and the Customer screen from section 5 were built in Revision 15 (see README). The rest of this document (backups, going online, offline vs online) is still open.
+
+
 ## Context
 You asked four things:
 1. What can be improved in the website.

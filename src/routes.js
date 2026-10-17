@@ -8,7 +8,7 @@ import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
   createOption, updateOption, getFeeConfig, updateFee, listPriceHistory, setProductImage, removeProductImage, getProductImage,
 } from './services/catalog.js';
-import { createOrder, getOrder, listOrders, listBoard, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
+import { createOrder, getOrder, listOrders, listBoard, listButcher, nextFreeTrackingNumber, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
 import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
 import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef, saveDay, savedDay } from './services/inventory.js';
@@ -45,7 +45,8 @@ export function registerRoutes(r) {
       throw new HttpError(401, 'Wrong username or password.', 'BAD_LOGIN');
     }
     loginLimiter.clear(key);
-    ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, createSession(ctx.db, user.id, ctx.now()), 7 * 86400));
+    // The butcher TV (display account) keeps its sign-in for a year; everyone else for 7 days.
+    ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, createSession(ctx.db, user.id, ctx.now()), (user.role === 'display' ? 365 : 7) * 86400));
     return { user };
   });
   r.add('POST', '/api/logout', 'public', (ctx) => {
@@ -149,6 +150,10 @@ export function registerRoutes(r) {
   r.add('GET', '/api/orders', 'cashier', (ctx) => ({ orders: listOrders(ctx.db, ctx.query) }));
   // Order List (Kanban board): the latest saved pickup status of every open order, and moving a card.
   r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db));
+  // Tracking Number (Revision 15): the lowest free number, for the Auto button and for filling the box in on New order.
+  r.add('GET', '/api/tracking-number/next', 'cashier', (ctx) => ({ tracking_number: nextFreeTrackingNumber(ctx.db) }));
+  // Butcher screen (Revision 15): the open chicken orders with how to cut them, no prices. The display (TV) account may call only this one.
+  r.add('GET', '/api/butcher', 'display', (ctx) => listButcher(ctx.db));
   r.add('POST', '/api/orders/:id/fulfillment', 'cashier', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
   r.add('PUT', '/api/orders/:id/bookmark', 'cashier', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
   r.add('GET', '/api/orders/:id', 'cashier', (ctx) => ({ order: getOrder(ctx.db, idParam(ctx), ctx.user) }));
@@ -175,7 +180,7 @@ export function registerRoutes(r) {
     return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"`, 'X-Order-Count': String(data.orderCount) }, body: buildDailyXlsx(data) } };
   });
   // Who can be picked in the report's cashier filter.
-  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active).map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
+  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active && u.role !== 'display').map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
 
   // ---- Export (manager and admin) ----
   const exportName = (ctx, ext) => `chicken-pos_${ctx.query.from || 'start'}_to_${ctx.query.to || 'latest'}.${ext}`.replace(/[^A-Za-z0-9._-]/g, '');

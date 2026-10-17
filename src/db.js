@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin')),
+  role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin','display')),   -- display (Revision 15): the butcher TV account
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
   created_at TEXT NOT NULL,
   -- Set when an admin deletes an account that already appears in orders, payments or the audit trail. The row stays so
@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS orders (
   -- The business day (Daily Inventory) this order was sold on. Not the same as business_date, which is the calendar date used in the
   -- order number. Fixed when the order is saved.
   business_day_id INTEGER REFERENCES business_days(id),
+  -- Revision 15: the tag number (1 to 100) that marks the chicken of this order in the butcher area. Empty when the order has no chicken.
+  tracking_number INTEGER CHECK (tracking_number IS NULL OR (tracking_number BETWEEN 1 AND 100)),
   CHECK (total_centavos = subtotal_centavos - discount_centavos),
   CHECK ((discount_type = 'NONE') = (discount_centavos = 0))
 );
@@ -248,6 +250,10 @@ CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(business_date);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_fulfillment ON orders(fulfillment_status);
 CREATE INDEX IF NOT EXISTS idx_orders_day ON orders(business_day_id);
+-- Revision 15: a tracking number can belong to only ONE active chicken order. Active = a real sale still Ongoing or Standby. The number is free
+-- again once the order is Complete, cancelled or replaced. The database enforces this, so two cashiers saving at once cannot both get #5.
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_tracking_number ON orders(tracking_number)
+  WHERE tracking_number IS NOT NULL AND fulfillment_status IN ('ONGOING','STANDBY') AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED');
 
 -- One row per chicken line. Preparation is saved on the line, not on the whole order.
 ${orderItemsTable('order_items', true)};
@@ -329,7 +335,7 @@ CREATE TRIGGER IF NOT EXISTS orders_no_delete BEFORE DELETE ON orders
 BEGIN SELECT RAISE(ABORT, 'orders cannot be deleted'); END;
 -- Only status, refund amount and the replaced-by link may ever change on an order.
 CREATE TRIGGER IF NOT EXISTS orders_immutable_fields
-BEFORE UPDATE OF order_number, business_date, business_day_id, customer_number, subtotal_centavos, discount_type, discount_value, discount_centavos, discount_reason, discount_note, total_centavos, cashier_id, submitted_at, submission_key, replaces_order_id ON orders
+BEFORE UPDATE OF order_number, business_date, business_day_id, customer_number, subtotal_centavos, discount_type, discount_value, discount_centavos, discount_reason, discount_note, total_centavos, cashier_id, submitted_at, submission_key, replaces_order_id, tracking_number ON orders
 BEGIN SELECT RAISE(ABORT, 'order details cannot be changed after submission'); END;
 CREATE TRIGGER IF NOT EXISTS orders_status_guard BEFORE UPDATE OF status ON orders
 WHEN NEW.status <> OLD.status
@@ -501,7 +507,7 @@ WHEN (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be deleted'); END;
 `;
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 /** One safety copy of the file per start, taken just before the first upgrade step runs. */
 function makeBackup(db, file) {
@@ -794,6 +800,50 @@ function migrateTo11(db, backup) {
   });
 }
 
+/**
+ * Version 11 -> 12 (Revision 15). Two changes:
+ *   * orders gets the tracking_number column (older orders keep it empty). The unique index and the trigger that locks the number are
+ *     made by the schema step; the old trigger is dropped here so the new one replaces it.
+ *   * the users table must allow the new "display" role (the butcher TV account). SQLite cannot change a CHECK rule in place, so the
+ *     table is rebuilt the way the SQLite manual describes: build the new table, copy every row with its id, drop the old one, rename.
+ *     Foreign keys are switched off for that (the setting cannot change inside a transaction) and checked again before the commit,
+ *     so every order, payment and sign-in still points at the same user.
+ */
+function migrateTo12(db, backup) {
+  backup('v12');
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    upgrade(db, 12, () => {
+      if (!hasColumn(db, 'orders', 'tracking_number')) {
+        db.exec('ALTER TABLE orders ADD COLUMN tracking_number INTEGER CHECK (tracking_number IS NULL OR (tracking_number BETWEEN 1 AND 100))');
+      }
+      db.exec('DROP TRIGGER IF EXISTS orders_immutable_fields');
+      const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()?.sql ?? '';
+      if (usersSql && !usersSql.includes("'display'")) {
+        const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'users'").get()?.seq;
+        db.exec(`CREATE TABLE users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          display_name TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin','display')),
+          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+          created_at TEXT NOT NULL,
+          deleted_at TEXT
+        )`);
+        db.exec('INSERT INTO users_new (id, username, display_name, password_hash, role, active, created_at, deleted_at) SELECT id, username, display_name, password_hash, role, active, created_at, deleted_at FROM users');
+        db.exec('DROP TABLE users');
+        db.exec('ALTER TABLE users_new RENAME TO users');
+        if (seq !== undefined) db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(seq);
+      }
+      const broken = db.prepare('PRAGMA foreign_key_check').all();
+      if (broken.length) throw new Error(`The upgrade to version 12 would break ${broken.length} link(s) between records, so nothing was changed.`);
+    });
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
@@ -817,6 +867,7 @@ export function openDb(file) {
     if (version < 9) migrateTo9(db, backup);
     if (version < 10) migrateTo10(db, backup);
     if (version < 11) migrateTo11(db, backup);
+    if (version < 12) migrateTo12(db, backup);
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

@@ -3,7 +3,7 @@
 // and the expenses (see advanced.js). A Katay or Dead chicken from the ref is sold here by the kilo, at a price the cashier types.
 import { api } from '../api.js';
 import { setScreenKeys, keyBadge, typingIn, hasKeyboard } from '../keys.js';
-import { state, saveDraft, clearDraft, findProduct, findOption, priceItem, priceOther, priceRef, draftTotals, draftLineCount, refreshConfig, hasStock, savedHeads, savedMilli, availableHeads, availableMilli, stockOptionOf, savedRefHeads, availableRefHeads, refProducts } from '../state.js';
+import { state, saveDraft, clearDraft, onDraftSaved, findProduct, findOption, priceItem, priceOther, priceRef, draftTotals, draftLineCount, refreshConfig, hasStock, savedHeads, savedMilli, availableHeads, availableMilli, stockOptionOf, savedRefHeads, availableRefHeads, refProducts } from '../state.js';
 import { $, esc, label, formatPeso, formatKg, formatThousandths, uuid, toast, errorBox, confirmDialog, prepChips, fmtDateTime, iconFor, productPicture, watchImages } from '../util.js';
 import { emptyPrep, applyPrepChange, validatePrep, serviceOf, needsSliceSize } from '/shared/rules.js';
 import { parseWeightToGrams, parseQuantityToMilli, parseWholeQuantityToMilli, parsePesosToCentavos, parseHeads, MAX_HEADS } from '/shared/money.js';
@@ -13,6 +13,7 @@ import { cashCheck, typedMoneyText, parseMoneyInput, pesoPlain } from '/shared/c
 import { describeQty, insufficientStockMessage } from '/shared/inventory.js';
 import { orderTable, slipPayment } from './slip.js';
 import { renderAdvanced, advancedClick, advancedInput, advancedKeyDown } from './advanced.js';
+import { startCustomerLink, publishToCustomer, openCustomerWindow } from '../customerLink.js';
 
 const REF_ICON = { KATAY: '🔪', DEAD: '🧊' };
 
@@ -518,13 +519,67 @@ function renderOrderPanel() {
     ${count ? `<div>${chickenLines.join('')}${otherLines.join('')}${refLines.join('')}</div>` : '<div class="empty">Nothing added yet. Tap a product to start.</div>'}
     <div class="field mt-m"><label for="customer">Customer number <span class="muted">(optional)</span></label>
       <input id="customer" type="text" maxlength="40" value="${esc(d.customerNumber)}" placeholder="Walk-in" autocomplete="off"></div>
+    ${d.items.length ? `<div class="field mt-s"><label for="tracking">Tracking No. <span class="muted">(tag on the chicken)</span></label>
+      <div class="tracking-row"><input id="tracking" type="text" inputmode="numeric" maxlength="3" value="${esc(d.trackingNumber)}" placeholder="Auto" autocomplete="off" aria-describedby="trackingHint">
+        <button type="button" class="btn btn--small" data-action="tracking-auto" title="Pick the lowest number that is free">Auto</button></div>
+      <span class="hint" id="trackingHint">1 to 100. The number stays with this order until it is Complete.</span></div>` : ''}
     <div class="total-plate"><span>Total</span><output id="orderTotal">${formatPeso(t.total)}</output></div>
     ${t.discount > 0 ? `<p class="plate-note">Subtotal ${formatPeso(t.subtotal)} &minus; discount ${formatPeso(t.discount)}</p>` : ''}
     <div class="btn-row mt-m">
       <button type="button" class="btn btn--primary btn--big" data-action="go-review" ${count === 0 || unavailable ? 'disabled' : ''}>Review order</button>
       <button type="button" class="btn" data-action="clear-order" ${count === 0 && !d.changeOf ? 'disabled' : ''}>Cancel current order</button>
-    </div>`;
+    </div>
+    <div class="mt-s"><button type="button" class="btn btn--small btn--plain" data-action="open-customer" title="Opens the screen the customer looks at. Drag it to the second monitor, then press F11.">Open customer screen</button></div>`;
+  if (!d.items.length) { if (d.trackingNumber) { d.trackingNumber = ''; saveDraft(); } } else if (!d.trackingNumber) autoTracking();
 }
+
+// ---- Tracking number (Revision 15) -------------------------------------------------------------------
+// A chicken order carries a tag number from 1 to 100. The box is filled in with the lowest free number as soon as there is chicken in the order;
+// the cashier can type another one. The server checks it again when the order is saved, so two cashiers can never end up with the same number.
+let trackingBusy = false;
+async function autoTracking() {
+  if (trackingBusy) return;
+  trackingBusy = true;
+  try {
+    const { tracking_number: next } = await api('GET', '/api/tracking-number/next');
+    const d = state.draft;
+    if (next === null) { toast('All tracking numbers 1 to 100 are in use. Mark finished orders as Complete first.', 'error'); return; }
+    if (d && d.items.length) {
+      d.trackingNumber = String(next); saveDraft();
+      const box = $('#tracking'); if (box) box.value = d.trackingNumber;
+    }
+  } catch { /* the server picks a number when the order is saved */ } finally { trackingBusy = false; }
+}
+
+// ---- Customer screen (Revision 15) -------------------------------------------------------------------
+// Tells the second monitor what is on the order and how much cash was handed over. Only this summary leaves this window.
+function customerSummary() {
+  const d = state.draft;
+  if (!d || draftLineCount(d) === 0) return { type: 'idle' };
+  const lines = [];
+  for (const i of d.items) {
+    const p = priceItem(i); if (!p) continue;
+    lines.push({ name: p.product.name, detail: [`${p.heads > 1 ? `${p.heads} heads, ` : ''}${formatKg(p.weightG)} kg`, ...prepChips({ feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut, sliceSize: i.prep.sliceSize })].join(' · '), total: p.lineTotal });
+  }
+  for (const i of d.otherItems) {
+    const p = priceOther(i); if (!p) continue;
+    lines.push({ name: p.product.name, detail: `${p.option.unit}`, total: p.lineTotal });
+  }
+  for (const i of d.refItems ?? []) {
+    const p = priceRef(i); if (!p) continue;
+    lines.push({ name: p.name, detail: `${formatKg(p.weightG)} kg`, total: p.lineTotal });
+  }
+  const t = draftTotals(d);
+  const msg = { type: 'order', lines, subtotal: t.subtotal, discount: t.discount, total: t.total };
+  const pay = d.payment;
+  if (pay.method === 'CASH' && pay.received.trim()) {
+    const s = payState();
+    msg.cash = { received: parseMoneyInput(pay.received).value ?? 0, change: s.cash?.change ?? null };
+  } else if (pay.method !== 'NONE' && pay.method !== 'CASH') msg.method = PAYMENT_METHODS[pay.method] ?? pay.method;
+  return msg;
+}
+function pushToCustomer() { publishToCustomer(customerSummary()); }
+onDraftSaved(pushToCustomer);   // every change to the order is sent to the Customer screen
 
 // ---- Review ----------------------------------------------------------------------------------------
 
@@ -572,7 +627,7 @@ function renderReview() {
       <div class="slip">
         <div class="slip-head">
           <div><div class="muted" data-slip-kind>Order Slip. Official Receipt.</div><div class="no">Order number is assigned when you submit</div></div>
-          <div class="right"><div>${esc(fmtDateTime(new Date().toISOString()))}</div><div>Customer: <strong>${esc(d.customerNumber.trim() || 'Walk-in')}</strong></div></div>
+          <div class="right"><div>${esc(fmtDateTime(new Date().toISOString()))}</div><div>Customer: <strong>${esc(d.customerNumber.trim() || 'Walk-in')}</strong></div>${d.items.length ? `<div>Tracking No.: <strong class="slip-tracking">${d.trackingNumber.trim() ? `#${esc(d.trackingNumber.trim())}` : 'Auto'}</strong></div>` : ''}</div>
         </div>
         <table>
           <thead><tr><th>Item</th><th>Weight or quantity</th><th class="num">Price</th><th class="num">Total</th><th class="no-print"></th></tr></thead>
@@ -727,6 +782,7 @@ function buildPayload() {
   const payload = {
     submission_key: d.submissionKey,
     customer_number: d.customerNumber.trim(),
+    ...(d.items.length ? { tracking_number: d.trackingNumber.trim() } : {}),   // empty = the server picks the lowest free number
     expected_total_centavos: t.total,
     items: d.items.map((i) => ({
       product_id: i.productId, weight: i.weight, heads: i.heads ?? '1', feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut,
@@ -760,12 +816,15 @@ async function submit() {
     ui.done = result.order;
     ui.step = 'done';
     ui.submitting = false;
+    const paidRow = result.order.payments?.[0];
     clearDraft();
+    publishToCustomer({ type: 'done', orderNumber: result.order.order_number, tracking: result.order.tracking_number, total: result.order.total_centavos, change: paidRow?.change_centavos ?? 0 });
     await refreshConfig(api).catch(() => {});   // the stock on the product cards changed with this sale
     render();
   } catch (err) {
     ui.submitting = false;
     ui.error = err;
+    if (err.code === 'TRACKING_TAKEN' || err.code === 'TRACKING_FULL') { d.trackingNumber = ''; saveDraft(); }   // going Back fills in a free number
     if (err.code === 'PRICE_CHANGED' || err.code === 'INSUFFICIENT_STOCK') {
       // Prices or stock changed since this screen was opened (another cashier sold something). Show the new numbers and ask for a fresh review.
       await refreshConfig(api).catch(() => {});
@@ -785,10 +844,11 @@ function renderDone() {
     <div class="done">
       <p class="muted no-print" role="status">Order saved. Thank you.</p>
       <div class="order-no-big">${esc(o.order_number)}</div>
+      ${o.tracking_number != null ? `<div class="tracking-big" data-tracking-big>Tracking No. <strong>#${esc(o.tracking_number)}</strong></div><p class="no-print"><strong>Put tag #${esc(o.tracking_number)} on the chicken.</strong></p>` : ''}
       <p class="no-print mt-s"><strong>Write this order number on the bag or give it to the customer.</strong></p>
       <div class="slip">
         <div class="slip-head"><div><div class="muted" data-slip-kind>Order Slip. Official Receipt.</div><div class="no">${esc(o.order_number)}</div></div>
-          <div class="right"><div>${esc(fmtDateTime(o.submitted_at))}</div><div>Customer: <strong>${esc(o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number)}</strong></div></div></div>
+          <div class="right"><div>${esc(fmtDateTime(o.submitted_at))}</div><div>Customer: <strong>${esc(o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number)}</strong></div>${o.tracking_number != null ? `<div>Tracking No.: <strong class="slip-tracking">#${esc(o.tracking_number)}</strong></div>` : ''}</div></div>
         ${orderTable(o)}
         ${slipPayment(o)}
         ${o.replaces_number ? `<p class="muted">Replaces ${esc(o.replaces_number)}.</p>` : ''}
@@ -981,6 +1041,8 @@ async function onClick(e) {
       if (!ok) return;
       clearDraft(); ui.step = 'pick'; ui.error = null; return render();
     }
+    case 'tracking-auto': { d.trackingNumber = ''; await autoTracking(); $('#tracking')?.focus(); return; }
+    case 'open-customer': openCustomerWindow(); pushToCustomer(); return;
     case 'go-review': if (draftLineCount()) { ui.step = 'review'; ui.error = null; render(); window.scrollTo({ top: 0 }); } return;
     case 'review-back': ui.step = 'pick'; ui.error = null; return render();
     case 'review-submit': return submit();
@@ -1018,6 +1080,7 @@ function onInput(e) {
   }
   if (t.id === 'otherSearch') { ui.search = t.value; return renderGrid(); }
   if (t.id === 'customer') { d.customerNumber = t.value; saveDraft(); return; }
+  if (t.id === 'tracking') { const v = t.value.replace(/\D/g, '').slice(0, 3); if (v !== t.value) t.value = v; d.trackingNumber = v; saveDraft(); return; }
   if (t.id === 'reasonNote') { d.reason.note = t.value; saveDraft(); return updateSubmitState(); }
   if (t.id === 'discValue') { d.discount.value = cleanDecimal(t.value, 2); if (d.discount.value !== t.value) t.value = d.discount.value; saveDraft(); return refreshTotals(); }
   if (t.id === 'discNote') { d.discount.note = t.value; saveDraft(); return refreshTotals(); }

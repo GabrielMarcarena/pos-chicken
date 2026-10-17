@@ -24,7 +24,7 @@ export async function mountOrders(root) {
         <div class="field"><label for="fview">Show</label><select id="fview">
           <option value="current" ${filters.view === 'current' ? 'selected' : ''}>Today's orders (open business day)</option>
           <option value="all" ${filters.view === 'all' ? 'selected' : ''}>All saved orders, by date</option></select></div>
-        <div class="field"><label for="fq">Order number or customer</label><input id="fq" type="text" value="${esc(filters.q)}" placeholder="ORD-20261009-001" autocomplete="off"></div>
+        <div class="field"><label for="fq">Order number, customer or tracking no.</label><input id="fq" type="text" value="${esc(filters.q)}" placeholder="ORD-20261009-001 or #5" autocomplete="off"></div>
         <div class="field" data-dates ${filters.view === 'current' ? 'hidden' : ''}><label for="ffrom">From</label><input id="ffrom" type="date" value="${esc(filters.from)}"></div>
         <div class="field" data-dates ${filters.view === 'current' ? 'hidden' : ''}><label for="fto">To</label><input id="fto" type="date" value="${esc(filters.to)}"></div>
         <div class="field"><label for="fstatus">Status</label><select id="fstatus">${statusOptions}</select></div>
@@ -145,9 +145,10 @@ async function load({ quiet = false } = {}) {
     }
     box.innerHTML = `<p class="muted">${orders.length} ${orders.length === 1 ? 'order' : 'orders'}${orders.length >= 200 ? ' (showing the latest 200)' : ''}</p>
       <div class="table-wrap"><table class="data">
-        <thead><tr><th>Order number</th><th>Date and time</th><th>Customer</th><th class="num">Items</th><th class="num">Total</th><th>Status</th><th>Cashier</th></tr></thead>
+        <thead><tr><th>Order number</th><th>Tracking No.</th><th>Date and time</th><th>Customer</th><th class="num">Items</th><th class="num">Total</th><th>Status</th><th>Cashier</th></tr></thead>
         <tbody>${orders.map((o) => `<tr class="clickable row--${o.status.toLowerCase().replace('partially_refunded', 'refunded')}" data-open="${o.id}" data-order-id="${o.id}">
           <td><button type="button" class="btn btn--plain btn--small" data-open="${o.id}"><strong>${esc(o.order_number)}</strong></button></td>
+          <td class="nowrap" data-tracking>${o.tracking_number != null ? `<strong>#${o.tracking_number}</strong>` : '<span class="muted">&mdash;</span>'}</td>
           <td class="nowrap">${esc(fmtDateTime(o.submitted_at))}</td><td>${esc(o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number)}</td>
           <td class="num">${o.line_count}</td><td class="num">${formatPeso(o.total_centavos)}</td><td data-order-status>${orderStatusBadges(o)}</td><td>${esc(o.cashier_name)}</td></tr>`).join('')}</tbody>
       </table></div>`;
@@ -213,6 +214,7 @@ export async function openDetail(id) {
       <dl class="kv">
         <dt>Date and time</dt><dd>${esc(fmtDateTime(order.submitted_at))}</dd>
         <dt>Customer</dt><dd>${esc(order.customer_number === 'WALK-IN' ? 'Walk-in' : order.customer_number)}</dd>
+        ${order.tracking_number != null ? `<dt>Tracking No.</dt><dd data-tracking-detail><strong class="detail-tracking">#${order.tracking_number}</strong></dd>` : ''}
         <dt>Cashier</dt><dd>${esc(order.cashier_name)}</dd>
         ${COUNTS_AS_SALE.includes(order.status) ? `<dt>Pickup status</dt><dd data-pickup-status>${esc(FULFILLMENT_LABELS[order.fulfillment_status] ?? '')}</dd>` : ''}
         ${order.refund_centavos ? `<dt>Refunded</dt><dd>${formatPeso(order.refund_centavos)}</dd>` : ''}
@@ -290,6 +292,7 @@ async function startChange(order) {
     draft.discount = { type: dsc.type, value, reason: dsc.reason_code, note: dsc.note ?? '' };
   }
   draft.customerNumber = order.customer_number === 'WALK-IN' ? '' : order.customer_number;
+  draft.trackingNumber = order.tracking_number != null ? String(order.tracking_number) : '';   // the replacement keeps the same tag unless the cashier picks another
   // What this order holds in stock right now: it is replaced by the new order, so its own stock counts as free for the replacement.
   const held = { chicken: {}, other: {}, ref: {} };
   for (const i of order.ref_items ?? []) held.ref[`${i.kind}:${i.product_id ?? null}`] = (held.ref[`${i.kind}:${i.product_id ?? null}`] ?? 0) + i.heads;

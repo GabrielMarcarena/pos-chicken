@@ -9,7 +9,7 @@ export const state = { user: null, config: null, draft: null };
 
 export function newDraft() {
   return {
-    items: [], otherItems: [], refItems: [], customerNumber: '', submissionKey: uuid(),
+    items: [], otherItems: [], refItems: [], customerNumber: '', trackingNumber: '', submissionKey: uuid(),
     payment: { method: 'NONE', amount: '', amountEdited: false, received: '', paidAt: '', accountName: '', accountNumber: '', reference: '' },
     discount: { type: 'NONE', value: '', reason: '', note: '' },
     changeOf: null, reason: { code: '', note: '' }, reviewed: false,
@@ -28,8 +28,13 @@ export function loadDraft() {
   state.draft = newDraft();
 }
 
+// The New order screen listens here so the Customer screen (second monitor) follows every change to the order being typed.
+let draftListener = null;
+export function onDraftSaved(fn) { draftListener = fn; }
+
 export function saveDraft() {
   try { sessionStorage.setItem('pos-draft', JSON.stringify({ userId: state.user?.id, draft: state.draft })); } catch { /* storage full or blocked */ }
+  try { draftListener?.(); } catch { /* the customer screen must never get in the way of the sale */ }
 }
 
 export function clearDraft() {

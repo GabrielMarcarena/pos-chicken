@@ -2,13 +2,13 @@
 import { api } from '../api.js';
 import { $, esc, toast, errorBox, openDialog } from '../util.js';
 
-const ROLE_TEXT = { cashier: 'Cashier', manager: 'Manager', admin: 'Admin' };
+const ROLE_TEXT = { cashier: 'Cashier', manager: 'Manager', admin: 'Admin', display: 'Butcher TV (screen only)' };
 // Why an account has no Delete Account button. The server sends the full sentence; this is the short label shown in the row.
 const PROTECTED_TEXT = { SELF_DELETE: 'This is you', PROTECTED: 'Main owner account', LAST_ADMIN: 'Last active admin' };
 
 export async function mountUsers(root) {
   root.innerHTML = `<div class="panel"><div class="panel-head"><h1>Users</h1><button type="button" class="btn btn--primary" id="addUser">Add user</button></div>
-    <p class="muted">Cashiers take and cancel orders. Managers also refund, export and manage products. Admins also set chicken prices, service fees and users.</p>
+    <p class="muted">Cashiers take and cancel orders. Managers also refund, export and manage products. Admins also set chicken prices, service fees and users. A <strong>Butcher TV</strong> account can only open the Butcher screen; use it on the TV in the butcher area.</p>
     <div id="userList" class="mt-s"></div></div>`;
   $('#addUser').onclick = () => userDialog(null);
   let users = [];

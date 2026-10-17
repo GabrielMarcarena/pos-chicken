@@ -4,7 +4,8 @@ import { tx } from '../db.js';
 import { HttpError } from '../http.js';
 import { ROLES } from '../../shared/constants.js';
 
-export const ROLE_RANK = { cashier: 1, manager: 2, admin: 3 };
+// display = the butcher TV account (Revision 15): rank 0, so it passes only the routes that name 'display' and is refused everything else.
+export const ROLE_RANK = { display: 0, cashier: 1, manager: 2, admin: 3 };
 
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16);
@@ -33,7 +34,7 @@ export function createUser(db, { username, display_name, role, password }, now =
   if (!/^[A-Za-z0-9._-]{3,32}$/.test(name)) {
     throw new HttpError(400, 'Username must be 3 to 32 letters, numbers, dots, dashes or underscores.', 'BAD_USERNAME');
   }
-  if (!ROLES.includes(role)) throw new HttpError(400, 'Choose cashier, manager or admin.', 'BAD_ROLE');
+  if (!ROLES.includes(role)) throw new HttpError(400, 'Choose cashier, manager, admin or display.', 'BAD_ROLE');
   checkPassword(password);
   const display = String(display_name ?? '').trim() || name;
   try {
@@ -63,7 +64,7 @@ export function updateUser(db, actor, id, body) {
     const next = { display_name: user.display_name, role: user.role, active: user.active, password_hash: user.password_hash };
     if (body.display_name !== undefined) next.display_name = String(body.display_name).trim().slice(0, 60) || user.display_name;
     if (body.role !== undefined) {
-      if (!ROLES.includes(body.role)) throw new HttpError(400, 'Choose cashier, manager or admin.', 'BAD_ROLE');
+      if (!ROLES.includes(body.role)) throw new HttpError(400, 'Choose cashier, manager, admin or display.', 'BAD_ROLE');
       next.role = body.role;
     }
     if (body.active !== undefined) next.active = body.active ? 1 : 0;
@@ -171,7 +172,8 @@ export function userFromSession(db, token, idleMinutes, now = new Date()) {
   const row = db.prepare(`SELECT s.token_hash, s.last_seen_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`).get(sha256(token));
   if (!row || !row.active) return null;
   const idleMs = now.getTime() - new Date(row.last_seen_at).getTime();
-  if (idleMs > idleMinutes * 60_000) {
+  // The butcher TV stays signed in however long it is left on; every other account is signed out after being idle.
+  if (row.role !== 'display' && idleMs > idleMinutes * 60_000) {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(row.token_hash);
     return null;
   }

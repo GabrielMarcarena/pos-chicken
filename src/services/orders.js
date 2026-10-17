@@ -57,6 +57,7 @@ export function presentOrder(o, viewer) {
     business_date: o.business_date,
     business_day_id: o.business_day_id,   // which Daily Inventory day counted this sale
     customer_number: o.customer_number,
+    tracking_number: o.tracking_number ?? null,   // Revision 15: the tag number that marks this order's chicken in the butcher area
     status: o.status,
     fulfillment_status: o.fulfillment_status,
     subtotal_centavos: o.subtotal_centavos,
@@ -115,7 +116,8 @@ export function listOrders(db, { q = '', from, to, status, pickup, view = 'all',
   const where = [];
   const params = [];
   const text = clean(q, 60);
-  if (text) { where.push('(o.order_number LIKE ? OR o.customer_number LIKE ?)'); params.push(`%${text}%`, `%${text}%`); }
+  // "#5" or "5" also finds the order whose tracking number is 5.
+  if (text) { where.push('(o.order_number LIKE ? OR o.customer_number LIKE ? OR CAST(o.tracking_number AS TEXT) = ?)'); params.push(`%${text}%`, `%${text}%`, text.replace(/^#/, '')); }
   if (!text && view === 'current') {
     const open = db.prepare("SELECT id FROM business_days WHERE status = 'OPEN'").get();
     where.push(`(o.business_day_id = ? OR (o.fulfillment_status IN ('ONGOING','STANDBY') AND o.status IN (${COUNTS_AS_SALE.map(() => '?').join(', ')})))`);
@@ -133,7 +135,7 @@ export function listOrders(db, { q = '', from, to, status, pickup, view = 'all',
     params.push(pickup, ...COUNTS_AS_SALE);
   }
   const rows = db.prepare(`
-    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.status, o.fulfillment_status, o.total_centavos, o.refund_centavos, o.submitted_at,
+    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.tracking_number, o.status, o.fulfillment_status, o.total_centavos, o.refund_centavos, o.submitted_at,
            u.display_name AS cashier_name, rb.order_number AS replaced_by_number, d.business_date AS day_date,
            (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) + (SELECT COUNT(*) FROM order_other_items x WHERE x.order_id = o.id)
              + (SELECT COUNT(*) FROM order_ref_items r WHERE r.order_id = o.id) AS line_count
@@ -142,6 +144,41 @@ export function listOrders(db, { q = '', from, to, status, pickup, view = 'all',
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY o.id DESC LIMIT ?`).all(...params, Math.min(Number(limit) || 200, 500));
   return rows;
+}
+
+// ---- Tracking numbers (Revision 15) ---------------------------------------------------------------
+// A tag number from 1 to 100 marks the chicken of one order in the butcher area. It belongs to an ACTIVE order only: a real sale that is
+// still Ongoing or Standby. Once the order is Complete (or canceled, or replaced by a change) the number can be used again.
+export const TRACKING_MAX = 100;
+const ACTIVE_SQL = "fulfillment_status IN ('ONGOING','STANDBY') AND status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')";
+
+/** The active order that holds this tracking number, or undefined when it is free. */
+export function trackingHolder(db, number, exceptOrderId = 0) {
+  return db.prepare(`SELECT id, order_number FROM orders WHERE tracking_number = ? AND id <> ? AND ${ACTIVE_SQL}`).get(number, exceptOrderId);
+}
+
+/** The lowest tracking number nobody is using, or null when all of 1 to 100 are in use. */
+export function nextFreeTrackingNumber(db) {
+  const used = new Set(db.prepare(`SELECT tracking_number FROM orders WHERE tracking_number IS NOT NULL AND ${ACTIVE_SQL}`).all().map((r) => r.tracking_number));
+  for (let n = 1; n <= TRACKING_MAX; n += 1) if (!used.has(n)) return n;
+  return null;
+}
+
+const takenMessage = (n) => `Tracking number ${n} is already taken. Please select a different number.`;
+
+/**
+ * The tracking number this order will get. Call inside tx(). An empty number is filled in with the lowest free one (the screen does
+ * the same, so the cashier sees it first); a typed number must be free. Orders without chicken have none.
+ */
+function assignTracking(db, draft) {
+  if (!draft.lines.length) return null;
+  if (draft.tracking === null) {
+    const next = nextFreeTrackingNumber(db);
+    if (next === null) throw new HttpError(409, `All tracking numbers 1 to ${TRACKING_MAX} are in use. Mark finished orders as Complete first.`, 'TRACKING_FULL');
+    return next;
+  }
+  if (trackingHolder(db, draft.tracking)) throw new HttpError(409, takenMessage(draft.tracking), 'TRACKING_TAKEN');
+  return draft.tracking;
 }
 
 /**
@@ -155,7 +192,7 @@ export function listOrders(db, { q = '', from, to, status, pickup, view = 'all',
 export function listBoard(db) {
   const open = db.prepare("SELECT id, business_date FROM business_days WHERE status = 'OPEN'").get() ?? null;
   const rows = db.prepare(`
-    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.status, o.fulfillment_status, o.bookmarked,
+    SELECT o.id, o.order_number, o.business_date, o.customer_number, o.tracking_number, o.status, o.fulfillment_status, o.bookmarked,
            o.subtotal_centavos, o.discount_centavos, o.discount_reason, o.total_centavos, o.refund_centavos,
            o.submitted_at, u.display_name AS cashier_name, o.business_day_id, d.business_date AS day_date
     FROM orders o JOIN users u ON u.id = o.cashier_id LEFT JOIN business_days d ON d.id = o.business_day_id
@@ -181,6 +218,27 @@ export function listBoard(db) {
 }
 
 /**
+ * The Butcher screen (Revision 15): real sales that are still Ongoing or Standby and have chicken on them, oldest first. Only what the
+ * butcher needs: who, the tag number, and how each chicken is prepared. No prices, payments or cashier names. Complete orders are not
+ * sent, so they leave the screen. Canceled and replaced orders are never sent.
+ */
+export function listButcher(db) {
+  const rows = db.prepare(`
+    SELECT o.id, o.order_number, o.customer_number, o.tracking_number, o.fulfillment_status, o.submitted_at
+    FROM orders o
+    WHERE o.fulfillment_status IN ('ONGOING','STANDBY') AND o.status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')
+      AND EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id)
+    ORDER BY o.id ASC LIMIT 200`).all();
+  const chicken = db.prepare('SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? ORDER BY line_no');
+  return {
+    orders: rows.map((o) => ({
+      ...o,
+      items: chicken.all(o.id).map((i) => ({ name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size })),
+    })),
+  };
+}
+
+/**
  * Move an order to Ongoing, Standby or Complete. Only the pickup status changes: the sale, its lines, prices and payment
  * are untouched. Every real move is written to the audit trail ("Ongoing → Standby", who, when). Moving to the column the
  * order is already in does nothing, so a double drop never writes twice or duplicates a card.
@@ -188,13 +246,18 @@ export function listBoard(db) {
 export function moveOrder(db, user, id, status, { now = new Date() } = {}) {
   if (!FULFILLMENT.includes(status)) throw new HttpError(400, 'Choose Ongoing, Standby or Complete.', 'VALIDATION');
   return tx(db, () => {
-    const order = db.prepare('SELECT id, order_number, status, fulfillment_status FROM orders WHERE id = ?').get(id);
+    const order = db.prepare('SELECT id, order_number, status, fulfillment_status, tracking_number FROM orders WHERE id = ?').get(id);
     if (!order) throw new HttpError(404, 'Order not found.', 'NOT_FOUND');
     if (order.status === 'CANCELED' || order.status === 'REPLACED') {
       throw new HttpError(409, `${order.order_number} is ${order.status.toLowerCase()} and is not on the Order List.`, 'BAD_STATUS');
     }
     const changed = order.fulfillment_status !== status;
     if (changed) {
+      // A Complete order gave its tracking number back. Moving it back to Ongoing or Standby needs that number to still be free.
+      if (status !== 'COMPLETE' && order.tracking_number != null) {
+        const holder = trackingHolder(db, order.tracking_number, id);
+        if (holder) throw new HttpError(409, `Tracking number ${order.tracking_number} is now used by ${holder.order_number}, so ${order.order_number} cannot be moved back. Mark ${holder.order_number} as Complete first.`, 'TRACKING_TAKEN');
+      }
       db.prepare('UPDATE orders SET fulfillment_status = ? WHERE id = ?').run(status, id);
       addEvent(db, {
         orderId: id, action: 'MOVE', reasonNote: `${FULFILLMENT_LABELS[order.fulfillment_status]} → ${FULFILLMENT_LABELS[status]}`, userId: user.id, now,
@@ -378,6 +441,15 @@ export function buildDraft(db, payload, config) {
   const total = discount ? subtotal - discount.amount : 0;
   const payment = buildPayment(payload.payment, total, errors);
 
+  // Revision 15: the tracking number is for orders with chicken. Empty = the server picks the lowest free one when the order is saved.
+  let tracking = null;
+  const typed = String(payload.tracking_number ?? '').trim().replace(/^#/, '');
+  if (typed !== '') {
+    if (!lines.length) errors.push('A tracking number is only for orders that have chicken.');
+    else if (!/^\d{1,3}$/.test(typed) || Number(typed) < 1 || Number(typed) > TRACKING_MAX) errors.push(`Tracking number must be a whole number from 1 to ${TRACKING_MAX}.`);
+    else tracking = Number(typed);
+  }
+
   const customer = clean(payload.customer_number, 40) || 'WALK-IN';
   if (!SAFE_TEXT.test(customer)) errors.push('Customer number contains characters that are not allowed.');
 
@@ -386,7 +458,7 @@ export function buildDraft(db, payload, config) {
   if (payload.expected_total_centavos !== undefined && payload.expected_total_centavos !== total) {
     throw new HttpError(409, 'A price changed while this order was open. The total has been refreshed. Please review it again.', 'PRICE_CHANGED');
   }
-  return { customer, lines, otherLines, refLines, payment, subtotal, discount, total };
+  return { customer, tracking, lines, otherLines, refLines, payment, subtotal, discount, total };
 }
 
 function submissionKey(value) {
@@ -400,7 +472,7 @@ function submissionKey(value) {
 function snapshot(db, id) {
   const o = loadOrder(db, id);
   return JSON.stringify({
-    order_number: o.order_number, status: o.status, subtotal_centavos: o.subtotal_centavos, discount_type: o.discount_type,
+    order_number: o.order_number, tracking_number: o.tracking_number, status: o.status, subtotal_centavos: o.subtotal_centavos, discount_type: o.discount_type,
     discount_centavos: o.discount_centavos, discount_reason: o.discount_reason, total_centavos: o.total_centavos, refund_centavos: o.refund_centavos,
     items: o.items.map(({ id: _i, order_id: _o, ...rest }) => rest),
     other_items: o.other_items.map(({ id: _i, order_id: _o, ...rest }) => rest),
@@ -416,7 +488,7 @@ function addEvent(db, e) {
 }
 
 /** Insert an order and everything under it. Must be called inside tx(). */
-function insertOrder(db, user, draft, { key, now, dayId, replacesId = null, reasonNote = null }) {
+function insertOrder(db, user, draft, { key, now, dayId, tracking = null, replacesId = null, reasonNote = null }) {
   const date = toBusinessDate(now);
   const seq = db.prepare(`INSERT INTO order_counters (business_date, last_seq) VALUES (?, 1)
                           ON CONFLICT(business_date) DO UPDATE SET last_seq = last_seq + 1 RETURNING last_seq`).get(date).last_seq;
@@ -424,9 +496,9 @@ function insertOrder(db, user, draft, { key, now, dayId, replacesId = null, reas
 
   const d = draft.discount;
   const { lastInsertRowid } = db.prepare(`INSERT INTO orders (order_number, business_date, customer_number, status, subtotal_centavos, discount_type, discount_value,
-                                          discount_centavos, discount_reason, discount_note, total_centavos, cashier_id, submitted_at, submission_key, replaces_order_id, business_day_id)
-                                          VALUES (?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(orderNumber, date, draft.customer, draft.subtotal, d.type, d.value, d.amount, d.reason, d.note, draft.total, user.id, now.toISOString(), key, replacesId, dayId);
+                                          discount_centavos, discount_reason, discount_note, total_centavos, cashier_id, submitted_at, submission_key, replaces_order_id, business_day_id, tracking_number)
+                                          VALUES (?,?,?,'COMPLETED',?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(orderNumber, date, draft.customer, draft.subtotal, d.type, d.value, d.amount, d.reason, d.note, draft.total, user.id, now.toISOString(), key, replacesId, dayId, tracking);
   const orderId = Number(lastInsertRowid);
 
   let lineNo = 0;
@@ -464,7 +536,8 @@ export function createOrder(db, user, payload, { config, now = new Date() }) {
     // Stock is checked here, inside the transaction that saves the order, against the open business day.
     const day = ensureOpenDay(db, now, user.id);
     assertStock(db, day, demandOf(draft), now);
-    const id = insertOrder(db, user, draft, { key, now, dayId: day.id });
+    const tracking = assignTracking(db, draft);
+    const id = insertOrder(db, user, draft, { key, now, dayId: day.id, tracking });
     return { order: getOrder(db, id, user), duplicate: false };
   });
 }
@@ -535,8 +608,11 @@ export function changeOrder(db, user, id, payload, { config, now = new Date() })
     const held = heldBy(db, id);
     const none = { chicken: new Map(), other: new Map(), ref: held.ref };
     assertStock(db, day, demandOf(draft), now, original.business_day_id === day.id ? held : none);
-    const newId = insertOrder(db, user, draft, { key, now, dayId: day.id, replacesId: id, reasonNote: `Replaces ${original.order_number}` });
-    db.prepare("UPDATE orders SET status = 'REPLACED', replaced_by_order_id = ? WHERE id = ?").run(newId, id);
+    // The original is marked REPLACED first: that gives its tracking number back, so the new order can keep it.
+    db.prepare("UPDATE orders SET status = 'REPLACED' WHERE id = ?").run(id);
+    const tracking = assignTracking(db, draft);
+    const newId = insertOrder(db, user, draft, { key, now, dayId: day.id, tracking, replacesId: id, reasonNote: `Replaces ${original.order_number}` });
+    db.prepare('UPDATE orders SET replaced_by_order_id = ? WHERE id = ?').run(newId, id);
     addEvent(db, {
       orderId: id, action: 'CHANGE', reasonCode: reason.code, reasonNote: reason.note, userId: user.id, now,
       relatedId: newId, before, after: snapshot(db, newId),

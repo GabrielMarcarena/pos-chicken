@@ -217,11 +217,12 @@ function cardHtml(o) {
   const no = esc(o.order_number);
   return `<article class="kcard${refunded ? ' kcard--refunded' : ''}${busy ? ' kcard--saving' : ''}${open ? ' kcard--open' : ''}${o.bookmarked ? ' kcard--bookmarked' : ''}" data-card="${o.id}" data-status="${o.fulfillment_status}"
       draggable="${busy ? 'false' : 'true'}" tabindex="0" aria-busy="${busy}"
-      aria-label="${no}, ${esc(customerText(o))}, ${esc(FULFILLMENT_LABELS[o.fulfillment_status])}, ${formatPeso(o.total_centavos)}${o.bookmarked ? ', bookmarked' : ''}. Press Enter to ${open ? 'fold' : 'open'} it, the Menu key to move it.">
+      aria-label="${no}, ${o.tracking_number != null ? `tracking number ${o.tracking_number}, ` : ''}${esc(customerText(o))}, ${esc(FULFILLMENT_LABELS[o.fulfillment_status])}, ${formatPeso(o.total_centavos)}${o.bookmarked ? ', bookmarked' : ''}. Press Enter to ${open ? 'fold' : 'open'} it, the Menu key to move it.">
     <div class="kcard-top">
       <button type="button" class="kcard-toggle" data-toggle="${o.id}" aria-expanded="${open}"${open ? ` aria-controls="kd-${o.id}"` : ''} aria-label="Details of ${no}">
         <span class="kcard-chev" aria-hidden="true">▸</span><span class="kcard-no">${no}</span>
       </button>
+      ${o.tracking_number != null ? `<span class="kcard-track" title="Tracking number" aria-label="Tracking number ${o.tracking_number}">#${o.tracking_number}</span>` : ''}
       <button type="button" class="kcard-mark${o.bookmarked ? ' is-on' : ''}" data-bookmark="${o.id}" aria-pressed="${o.bookmarked}" aria-label="Bookmark ${no}"
         title="${o.bookmarked ? 'Remove bookmark' : 'Bookmark this order'}"><span aria-hidden="true">${o.bookmarked ? '★' : '☆'}</span></button>
     </div>
