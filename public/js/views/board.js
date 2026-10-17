@@ -74,6 +74,7 @@ export async function mountBoard(root) {
           </div>
           <button type="button" class="btn btn--small" id="boardZoom" aria-pressed="${view.zoomedOut}" title="Show the board smaller so more orders fit on the screen">${view.zoomedOut ? 'Normal size' : 'Zoom out'}</button>
           <button type="button" class="btn btn--small" id="boardRefresh">Refresh</button>
+          <a class="btn btn--small" id="boardButcher" href="/#/butcher" target="_blank" rel="noopener" title="Opens the screen the butcher TV shows, in a new tab">Butcher view</a>
         </div>
       </div>
       <p class="muted">Tap a card to open or fold it. Drag a card to another column, or right-click it (on a phone or tablet, tap <strong>Move</strong>) to change its status.

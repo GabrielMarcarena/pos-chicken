@@ -25,6 +25,7 @@ The database is upgraded in place (version 11 → 12) with a safety copy first (
 - Changes are **smooth**: when an order moves to Standby its card shrinks and fades out of Ongoing while a row slides into the Standby list; when it becomes Complete the row fades away; the cards below glide up into the gap. A card that did not change is left alone, so nothing flickers.
 - It checks the server every 3 seconds. If the server cannot be reached it shows "Not connected - trying again" and keeps the last orders on screen.
 - It is only for looking. The cashier still moves orders to Standby or Complete on the **Order List**.
+- To preview it, press **Butcher view** at the top of the **Order List** (it opens in a new tab), or go to `/#/butcher` while signed in as staff. Staff get a small **Back to POS** link; the TV account does not.
 
 **Customer screen** (the second monitor facing the customer).
 - On **New order**, press **Open customer screen**. A clean window opens. Drag it to the second monitor and press **F11** for full screen.
