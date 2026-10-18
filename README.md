@@ -8,7 +8,9 @@ Built with plain JavaScript on Node.js and SQLite. There is nothing to install e
 
 The database is upgraded in place (version 12 → 13) with a safety copy first (`data/pos.db.before-v13-<time>.bak`). The users table is rebuilt so it accepts the new role (every account, id and sign-in is kept) and one table is added (`cash_on_hand`). Where this section and the sections below disagree, **this section is the current behaviour**.
 
-**Each role has its own mouse pointer.** The pointer glows in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. The top bar has a strip and a badge in the same colour (a touch screen has no pointer, so the strip tells you who is signed in). The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
+**Each role has its own mouse pointer.** The pointer glows in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. **Only the pointer is coloured; the top bar looks the same for everyone.** The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
+
+**Click feathers and a wandering chicken** (computers with a mouse only). Every mouse click throws a tiny burst of feathers in your role colour. If nobody touches the mouse or keyboard for **1 minute**, one chicken wanders around the screen, pecking here and there; it hurries off the moment you move the mouse. Neither can ever block a click, and neither shows on the sign-in page, the Butcher screen, the Customer screen or a touch screen. If the computer is set to "reduce motion", there are no feathers and the chicken just stands still.
 
 **New role: Assistant Cashier.** For a helper who only updates order status.
 - Sees the **Order List** and the **Butcher view** button, nothing else (no New order, Orders, Inventory, Products, Users, exports).
@@ -41,7 +43,7 @@ The database is upgraded in place (version 12 → 13) with a safety copy first (
 4. Cash on hand can be set by any cashier, manager or admin (not by the Assistant). Only the open business day can be set.
 5. Products beyond the 20th have no key; tap them.
 
-**Tests:** `npm test` runs 215 automated tests (7 are new: the Assistant sees no money and is refused everything else, the Assistant role can be created and edited, Cash on hand and Expected cash, the locked history and the open-day rule, the Daily Report row, and the 12 → 13 upgrade). The screens were driven in headless Chromium (12 checks: the pointer of every role, the Assistant's Order List, `/butcher` with sign-in and no Back link, `/customerscreen` with no sign-in, the printed receipt, keys 0 / Q / W with 12 products, the folded texts and Cash on hand): all passed. The old browser test (`npm run test:e2e`) is unchanged: 24 of 67 pass, the same 43 that already failed in revision 13.
+**Tests:** `npm test` runs 215 automated tests (7 are new: the Assistant sees no money and is refused everything else, the Assistant role can be created and edited, Cash on hand and Expected cash, the locked history and the open-day rule, the Daily Report row, and the 12 → 13 upgrade). The screens were driven in headless Chromium (15 checks: the pointer of every role, the plain top bar, the click feathers, the wandering chicken, the Assistant's Order List, `/butcher` with sign-in and no Back link, `/customerscreen` with no sign-in, the printed receipt, keys 0 / Q / W with 12 products, the folded texts and Cash on hand): all passed. The old browser test (`npm run test:e2e`) is unchanged: 24 of 67 pass, the same 43 that already failed in revision 13.
 
 ## Earlier: revision 15: Tracking Number, Butcher screen, Customer screen
 
@@ -93,7 +95,7 @@ Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords an
 4. A **refunded** order that is still Ongoing or Standby keeps its number and still shows on the Butcher screen, the same as on the Order List.
 5. The Butcher screen has **no Done button**; it only animates when an order changes. Orders move on the Order List as before. *(You confirmed this.)*
 
-**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 12 checks passed.
+**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 15 checks passed.
 **Known problem, not caused by this revision:** the old browser test `npm run test:e2e` is out of date. 43 of its 67 checks already fail on revision 13 (for example it looks for the Close button that revision 13 removed). It needs updating before it is useful again.
 
 ## Earlier: revision 14

@@ -12,6 +12,7 @@ import { mountUsers } from './views/users.js';
 import { mountButcher, stopButcher } from './views/butcher.js';
 import { mountCustomer, unmountCustomer } from './views/customer.js';
 import { startCustomerLink } from './customerLink.js';
+import { installFun } from './fun.js';
 import { installShortcuts, setScreenKeys, showShortcuts, hasKeyboard } from './keys.js';
 
 // Same order as the server (src/services/users.js). The Assistant Cashier (Revision 16) can only reach the screens marked 'assistant'.
@@ -40,7 +41,7 @@ function leaveDisplayScreens() { stopButcher(); unmountCustomer(); }
 function drawTopbar(current) {
   const bar = $('#topbar');
   if (!state.user) { bar.hidden = true; delete document.body.dataset.role; return; }
-  document.body.dataset.role = state.user.role;   // the mouse pointer and the top bar take the colour of this role (app.css)
+  document.body.dataset.role = state.user.role;   // the mouse pointer takes the colour of this role (app.css)
   bar.hidden = false;
   const links = ROUTES.filter((r) => RANK[state.user.role] >= RANK[r.role])
     .map((r) => `<a href="${r.path}" ${r.path === current ? 'aria-current="page"' : ''}>${esc(r.label)}</a>`).join('');
@@ -48,7 +49,7 @@ function drawTopbar(current) {
     <span class="brand">Chicken POS</span>
     <nav class="nav" aria-label="Main">${links}</nav>
     <div class="who">${hasKeyboard() ? '<button type="button" class="btn btn--small btn--plain" id="keysHelp" title="Keyboard shortcuts (?)">⌨ Keys</button>' : ''}
-      <span>${esc(state.user.display_name)} <span class="role-badge">${esc(ROLE_LABEL[state.user.role] ?? state.user.role)}</span></span>
+      <span>${esc(state.user.display_name)} <span class="role-badge">(${esc(ROLE_LABEL[state.user.role] ?? state.user.role)})</span></span>
       <button type="button" class="btn btn--small" id="logout">Sign out</button></div>`;
   // Tapping the tab you are already on starts that screen fresh (for example a new order after "Order saved").
   bar.querySelectorAll('.nav a').forEach((a) => { a.onclick = () => { if (location.hash === a.getAttribute('href')) route(); }; });
@@ -122,6 +123,7 @@ setUnauthorizedHandler(() => {
 
 window.addEventListener('hashchange', () => { if (state.user || isCustomerScreen()) route(); });
 installShortcuts();
+installFun();   // Revision 16: feathers on click, and a chicken that wanders when the computer is left alone
 
 (async () => {
   if (isCustomerScreen()) { route(); return; }   // the customer window never asks the server anything
