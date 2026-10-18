@@ -273,15 +273,6 @@ test('parallel submissions never share an order number', async () => {
   assert.ok(results.every((r) => r.status === 201));
 });
 
-test('order numbers follow the Philippine date, not UTC', async () => {
-  clock.now = new Date('2026-10-09T17:30:00Z'); // already 10 Oct 01:30 in Manila
-  const late = client();
-  await late.login('cash', 'cashier-pass-1');
-  const r = await late.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')] });
-  assert.equal(r.data.order.order_number, 'ORD-20261010-001');
-  clock.now = new Date('2026-10-09T02:00:00Z');
-});
-
 test('invalid orders are rejected with plain messages', async () => {
   const bad = async (payload, expected) => {
     const r = await cashier.call('POST', '/api/orders', { submission_key: key(), ...payload });
@@ -512,8 +503,9 @@ test('users: the last admin is protected and idle sessions expire', async () => 
 // ---- Daily Sales Report ---------------------------------------------------------------------------
 
 test('daily report: the paper form, filled in with what the app knows (per-head services, eggs, others, totals)', async () => {
-  const day = '2026-11-01';
-  clock.now = new Date('2026-11-01T02:00:00Z'); // 10:00 on 1 Nov in the Philippines
+  // Revision 13: sold on the open day, at the time the other tests use. (A jump to a later date would close the day at midnight, and the
+  // tests after this one, which go back to 9 October, would then sell on a day that only exists in the future.)
+  const day = '2026-10-09';
   const ca = client(), mg = client(), ad = client();
   await ca.login('cash', 'cashier-pass-1'); await mg.login('mgr', 'manager-pass-1'); await ad.login('owner', 'owner-pass-1');
   assert.equal((await ad.call('PUT', '/api/service-fees/POUR', { amount: '45', basis: 'per_head' })).status, 200);
@@ -535,10 +527,10 @@ test('daily report: the paper form, filled in with what the app knows (per-head 
 
     // Revision 11: the report is Excel only ("Download Daily Report"); the CSV (one row per sale line) is gone. The data behind it is checked here.
     assert.equal((await mg.call('GET', `/api/daily-report.csv?date=${day}`)).status, 404);
-    // Revision 11: the report date is the BUSINESS DAY the orders were counted on. Nobody closed the day these tests sell on, so the
-    // orders placed "on 1 November" still belong to that open business day, and the report for 1 November has none of them.
-    assert.equal(gatherDaily(db, { date: day }).orderCount, 0);
+    // Revision 11: the report date is the BUSINESS DAY the orders were counted on. Revision 13: a day closes by itself at midnight, so
+    // the business day of an order is the date it was sold on.
     const bday = db.prepare('SELECT d.business_date AS d FROM orders o JOIN business_days d ON d.id = o.business_day_id WHERE o.id = ?').get(o1.data.order.id).d;
+    assert.equal(bday, day);
     const ours = new Set([o1, o2, o3, o4].map((r) => r.data.order.order_number));
     const full = gatherDaily(db, { date: bday });
     const data = { ...full, chicken: full.chicken.filter((l) => ours.has(l.order)), other: full.other.filter((l) => ours.has(l.order)) };   // this test's orders only
@@ -565,7 +557,7 @@ test('daily report: the paper form, filled in with what the app knows (per-head 
     assert.ok([...onlyManager.chicken, ...onlyManager.other].every((l) => l.cashier === 'Manager'));
     assert.match(readZip((await mg.call('GET', `/api/daily-report.xlsx?date=${bday}&cashier=${managerId}`)).data)['xl/worksheets/sheet1.xml'], /CASHIER: Manager</);
 
-    // the Excel file: laid out like the form, landscape, with the right numbers
+    // the Excel file: laid out like the form (Revision 14: the paper form again, landscape), with the right numbers
     const res = await ad.call('GET', `/api/daily-report.xlsx?date=${bday}`);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-disposition'), new RegExp(`daily-sales-report_${bday}\\.xlsx`));
@@ -1230,4 +1222,14 @@ test('delete account: other staff and their sessions are not affected by deletin
   assert.equal((await keepClient.call('GET', '/api/config')).status, 200);
   assert.ok((await usersListed()).some((x) => x.id === keep.id));
   assert.equal(userRow(keep.id).active, 1);
+});
+
+// Revision 13: last in this file. Going past midnight closes the open day by itself, so every test after this one would sell on 10 Oct.
+test('order numbers follow the Philippine date, not UTC', async () => {
+  clock.now = new Date('2026-10-09T17:30:00Z'); // already 10 Oct 01:30 in Manila
+  const late = client();
+  await late.login('cash', 'cashier-pass-1');
+  const r = await late.call('POST', '/api/orders', { submission_key: key(), items: [live(cull, '1')] });
+  assert.equal(r.data.order.order_number, 'ORD-20261010-001');
+  clock.now = new Date('2026-10-09T02:00:00Z');
 });

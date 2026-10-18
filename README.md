@@ -1,10 +1,153 @@
 # Chicken POS
 
-A cashier screen and order records for a shop that sells chicken by weight. Cashiers pick a product, enter the live weight in kg, choose the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot), the slice size where one is asked, and With Blood, add other products such as eggs and condiments, add an optional discount, record how the customer paid (with a change calculator for cash), review, and submit. Orders are checked against a **Daily Inventory** of stock; the day's inventory is saved with **Submit Inventory Today** and the day is closed with **Closed Inventory Today and Reset the Day** on the Inventory page. An **Order List** board then tracks each order from Ongoing to Standby to Complete (picked up); its cards are compact, can be bookmarked and sorted. Every order is saved with a unique order number. Orders can be canceled, changed or refunded without losing the original record, and managers can download a spreadsheet.
+A cashier screen and order records for a shop that sells chicken by weight. Cashiers pick a product, enter the live weight in kg, choose the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot), the slice size where one is asked, and With Blood, add other products such as eggs and condiments, add an optional discount, record how the customer paid (with a change calculator for cash), review, and submit. Orders are checked against a **Daily Inventory** of stock; the day's numbers are kept with **Save**, the Excel file is made with **Submit Inventory Today**, and the day closes by itself at midnight. An **Order List** board then tracks each order from Ongoing to Standby to Complete (picked up); its cards are compact, can be bookmarked and sorted. Every order is saved with a unique order number. Orders can be canceled, changed or refunded without losing the original record, and managers can download a spreadsheet.
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 12)
+## What changed in this version (revision 17): ready to go online, records cleared, new browser tests
+
+- **Going online.** A step-by-step guide for a free server (Oracle Cloud, Singapore), a free address (DuckDNS), the padlock (Caddy) and nightly backups to Google Drive: [docs/deploy/online-hosting-guide.md](docs/deploy/online-hosting-guide.md). The ready-made files are in `deploy/` (auto-start service, Caddy settings, daily backup, update and address scripts). New settings in `.env.example`: `HOST` (listen only on this computer, for use behind Caddy) and `TRUST_PROXY` (use each visitor's real address for the sign-in limit; off by default, so nobody can fake it). Without them the app behaves exactly as before in the shop.
+- **Clearing records now works on every table.** `npm run clear-records` failed since revision 16, because the new Cash on hand table pointed at the days it deletes. Fixed, with a test. New option `npm run clear-records -- --everything`: also deletes the open business day (every stock number, cash count, expense and cash on hand) and all sign-ins, and keeps users, products, prices and fees. The app opens a fresh day the first time someone uses it.
+- **This shop's database was cleared with it** (12 test orders, 4 inventory days, 14 price changes). Kept: the admin account, 4 chicken products, 12 other products with their ways of selling, the prices and the service fees. The old backups, upgrade copies and saved inventory files of the test days were deleted.
+- **Browser tests replaced.** The old `tests/e2e.mjs` checked screens that were redesigned in revision 13 (43 of its 67 checks could not pass). It was moved to `tests/old/` for reference and replaced by two current suites, `npm run test:browser` (27 checks: tracking number, customer and butcher screens, pointers, Assistant Cashier, receipt, cash on hand, product keys, feathers, chicken).
+- **Smaller fixes:** `npm run create-user` now lists the Assistant and Butcher TV roles; the old hand-over notes moved to `docs/history/`.
+- **Tests:** `npm test` runs 221 automated tests (6 new), on both UTC and Asia/Manila clocks.
+
+## Earlier: revision 16: colour pointers, Assistant Cashier, cleaner receipt, shorter texts, Cash on hand, more product keys
+
+The database is upgraded in place (version 12 → 13) with a safety copy first (`data/pos.db.before-v13-<time>.bak`). The users table is rebuilt so it accepts the new role (every account, id and sign-in is kept) and one table is added (`cash_on_hand`). Where this section and the sections below disagree, **this section is the current behaviour**.
+
+**Each role has its own mouse pointer.** The pointer is a plain arrow (and a hand on buttons and links) in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. **Only the pointer is coloured; the top bar looks the same for everyone.** The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
+
+**Click feathers (admin only) and the Pitik chicken** (computers with a mouse only).
+- When the **admin** clicks, a tiny burst of red feathers pops out. Other roles get none.
+- If nobody touches the mouse or keyboard for **1 minute**, one chicken (drawn after your Pitik animation) wanders around the screen. It **pecks the screen and leaves a small crack that fades in about 10 seconds**, and bits of feed fly up. Now and then it stops, **stares out at you and blinks**, and its **eye follows the mouse pointer**. The moment you move the mouse or press a key, it hurries off and its cracks disappear.
+- Neither can ever block a click, and neither shows on the sign-in page, the Butcher screen, the Customer screen or a touch screen. If the computer is set to "reduce motion", there are no feathers, and the chicken just stands still (it still blinks and watches the pointer).
+
+**New role: Assistant Cashier.** For a helper who only updates order status.
+- Sees the **Order List** and the **Butcher view** button, nothing else (no New order, Orders, Inventory, Products, Users, exports).
+- Can move cards between Ongoing / Standby / Complete and bookmark them.
+- **No prices anywhere:** the server does not even send totals, payments, discounts or cashier names to this role, and there is no Details button.
+- Add one in **Users > Add user** and pick **Assistant Cashier**.
+
+**Butcher and Customer screens have their own addresses.**
+- `yourdomain/butcher`: the Butcher screen. It **asks for a sign-in** (the Butcher TV account, or any staff account), then shows the orders. The **Back to POS link is gone**; a staff member closes the preview tab instead. Names stay on the TV.
+- `yourdomain/customerscreen`: the Customer screen. **No sign-in.** It works only on the **same computer** as the cashier window (the second monitor): the two windows talk inside that computer, so opened on another device it only shows "Welcome".
+- When the app is online, use **HTTPS** so passwords are protected on the way.
+- The old addresses `#/butcher` and `#/customer` still work.
+
+**Receipt.** On paper only: the service name (for example Po-ur & Slice), **With Blood** and the slice size (Medium pieces) are not printed. The prices stay, and so does the fee line (for example **+₱135.00 Dress (3 × ₱45.00)**). On the screen the cashier still sees everything while checking the order.
+
+**Shorter texts.** The long explanations are now one short line, with the full text folded under **How it works** (click to open): Order List, Orders (Daily Report and Export), Daily Inventory (what each button does, and "How the numbers are worked out"), Cash breakdown, Expenses, Discount, Users (what each role can do) and the picture box in Products. Nothing was deleted, only moved. The delete-account question is shorter too.
+
+**Cash on hand (New order > Advanced > Cash breakdown).** The starting cash (panukli) put in the drawer for change.
+- Type it once a day and press **Save** (saving again adds a new amount; the latest one counts and the earlier ones stay in the history).
+- The summary now reads: **Overall total** (counted) · **Cash on hand** · **Cash sales today** (on its own line, cash only, after discounts and refunds) · **Less expenses** · **Expected cash** · **Excess / Loss**.
+- **Expected cash = Cash on hand + Cash sales today − Expenses.**
+- The **Daily Report** has a new row **PLUS CASH ON HAND** just above EXPECTED CASH, and EXPECTED CASH adds it (as a formula too). Without a cash on hand the report is the same as before.
+
+**More product keys.** On New order the product cards are chosen with **1 to 9, then 0 (10th), then Q W E R T Y U I O P (11th to 20th)**. Each card shows its key, and the `?` key list was updated.
+
+**Please confirm (decisions I made).**
+1. The Assistant Cashier's colour is **blue** (you named red, yellow and green only).
+2. The Assistant Cashier **cannot** save the Cash on hand or anything else on New order, and cannot open order Details.
+3. The fee line on the receipt keeps its own fee name (**Pour** or **Dress**), as it did before, not the long service name.
+4. Cash on hand can be set by any cashier, manager or admin (not by the Assistant). Only the open business day can be set.
+5. Products beyond the 20th have no key; tap them.
+
+**Tests:** `npm test` runs 215 automated tests (7 are new: the Assistant sees no money and is refused everything else, the Assistant role can be created and edited, Cash on hand and Expected cash, the locked history and the open-day rule, the Daily Report row, and the 12 → 13 upgrade). The screens were driven in headless Chromium (15 checks: the pointer of every role, the plain top bar, the click feathers, the wandering chicken, the Assistant's Order List, `/butcher` with sign-in and no Back link, `/customerscreen` with no sign-in, the printed receipt, keys 0 / Q / W with 12 products, the folded texts and Cash on hand): all passed. The old browser test (`npm run test:e2e`) is unchanged: 24 of 67 pass, the same 43 that already failed in revision 13.
+
+## Earlier: revision 15: Tracking Number, Butcher screen, Customer screen
+
+The database is upgraded in place (version 11 → 12) with a safety copy first (`data/pos.db.before-v12-<time>.bak`). Old orders keep every value; they simply have no tracking number. Where this section and the sections below disagree, **this section is the current behaviour**.
+
+**Tracking Number (Change Request 1).** A tag number from **1 to 100** that marks the chicken of one order, so the butcher and the cashier never mix up two customers' chicken.
+- On **New order**, a **Tracking No.** box appears as soon as there is chicken in the order. It is filled in with the **lowest free number** by itself. Type another number if you prefer, or press **Auto** to get the lowest free one again.
+- A number belongs to **one active order at a time**. "Active" means the order is still **Ongoing or Standby**. If you use a number that is taken, the order is not saved and you see: *"Tracking number 5 is already taken. Please select a different number."* Going Back then fills in a free number.
+- The number is free again when its order is **Complete**, **canceled**, or **replaced by a change** (the replacement keeps the same number unless you pick another).
+- Once an order is saved its number **cannot be edited** (the database itself refuses it). To fix a wrong number, use **Change order** on the Orders screen.
+- Two cashiers saving at the same moment can never get the same number: the server checks inside the same step that saves the order, and the database has a rule of its own as a second lock.
+- Moving a Complete order back to Ongoing or Standby is refused if another order is using its number now. The message says which order.
+- Only orders with chicken **that is prepared** get a number. Orders with only **Live** chicken, or only eggs, garlic and other products, have none (a Live chicken is not butchered). In an order that has both, the number is for the prepared chicken.
+- It is shown **big** on the "Order saved" screen and on the printed slip, on the review slip, in the order details, on every card of the **Order List** (`#5`), and in the **Orders** list (its own column; the search box also finds `#5`). The spreadsheet exports are unchanged.
+
+**Butcher screen** (for the TV in the butcher area). It shows only what the butcher needs: no tabs, no prices, no buttons.
+- **Ongoing** orders are the screen: big cards on the left with the **tracking number**, the customer name, the order number, how long ago, and each chicken with its weight and **how to cut it** in big words (for example **DRESS & SLICE**, **MEDIUM PIECES**, **WITH BLOOD**). A new order glows yellow with "NEW" for a minute.
+- **Standby** orders (ready, waiting for the customer) are a small, dim list on the right, so they never compete with Ongoing.
+- **Complete** orders disappear. Canceled and replaced orders never show. Orders with no prepared chicken never show, and a **Live** line inside a mixed order is not listed.
+- Changes are **smooth**: when an order moves to Standby its card shrinks and fades out of Ongoing while a row slides into the Standby list; when it becomes Complete the row fades away; the cards below glide up into the gap. A card that did not change is left alone, so nothing flickers.
+- It checks the server every 3 seconds. If the server cannot be reached it shows "Not connected - trying again" and keeps the last orders on screen.
+- It is only for looking. The cashier still moves orders to Standby or Complete on the **Order List**.
+- To preview it, press **Butcher view** at the top of the **Order List** (it opens in a new tab), or go to `/#/butcher` while signed in as staff. Staff get a small **Back to POS** link; the TV account does not.
+
+**Customer screen** (the second monitor facing the customer).
+- On **New order**, press **Open customer screen**. A clean window opens. Drag it to the second monitor and press **F11** for full screen.
+- It follows the cashier as they type: the items, the total, **Cash received** and **Change**. After the order is saved it says **Thank you** with the tracking number for 12 seconds. Between orders it shows a welcome.
+- It needs no internet and no sign-in. The two windows talk to each other inside the same computer, and only a small summary of the order is sent.
+
+**The Butcher TV account.** In **Users > Add user**, choose the role **Butcher TV (screen only)**, for example the username `butcher-tv`.
+- It opens the Butcher screen right after sign-in and **nothing else**: the server refuses every other page and every action. It cannot see prices, sales or products.
+- It **never signs itself out** when idle (other accounts are signed out after 4 hours) and its sign-in lasts a year, so the TV can stay on.
+- Sign in once on the TV, then leave it. To keep the screen clean, open the page full screen (kiosk mode), for example `chrome --kiosk http://<this-computer>:3000/#/butcher`.
+
+**Setting up the TV (one time).** The app runs inside WSL, which the TV cannot reach by default.
+1. Windows 11: create the file `C:\Users\<you>\.wslconfig` with these two lines, then run `wsl --shutdown` in PowerShell and start the app again:
+   ```
+   [wsl2]
+   networkingMode=mirrored
+   ```
+2. Allow the app through the Windows firewall (PowerShell as administrator): `New-NetFirewallRule -DisplayName "Chicken POS" -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Allow -Profile Private`
+3. On the TV, open `http://<this computer's Wi-Fi address>:3000/#/butcher` and sign in with the Butcher TV account. (Find the address with `ipconfig`.)
+Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords and keep the Wi-Fi private.
+
+**Please confirm (decisions I made).**
+1. Numbers go from **1 to 100** and the lowest free one is picked, so a number comes back quickly after its order is Complete (for example #1 again). *(You confirmed this.)*
+2. **Live** chicken gets no tracking number and is not shown to the butcher. *(You confirmed this.)*
+3. The box fills in by itself; the cashier does not have to type anything. If the box is left empty, the server picks the lowest free number.
+4. A **refunded** order that is still Ongoing or Standby keeps its number and still shows on the Butcher screen, the same as on the Order List.
+5. The Butcher screen has **no Done button**; it only animates when an order changes. Orders move on the Order List as before. *(You confirmed this.)*
+
+**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 12 checks passed.
+**Known problem (fixed in revision 17):** the old browser test `npm run test:e2e` was out of date; it was replaced by `npm run test:browser`.
+
+## Earlier: revision 14
+
+No database change (still version 11).
+
+**Daily Sales Report: the paper form again, with Katay / Dead per chicken.** Landscape, the chicken blocks side by side as in revision 12. Inside each block, under the live sales: a "B-CULL: KATAY (from the ref)" part and a "B-CULL: DEAD (from the ref)" part (no service fee). At the bottom of each block **LIVE, KATAY and DEAD have their own heads, kilos and amount** (never added together), then **TOTAL AMOUNT** (the money of the three). **DISCOUNTS moved out of the Others column to sit above EXPENSES.** The sheet is a **rectangle**: every column ends on the same last row, where the TOTAL AMOUNT of each block, the TOTAL AMOUNT of the expenses and **EXCESS/LOSS** all sit. Blank rows take up the slack. The top-to-bottom layout of revision 13 is gone.
+
+**Daily Inventory: an edited Beginning Balance glows.** Nothing is printed under the number any more (it pushed the rows out of line). The box has an amber glow and a small ✎; **hover it (or tap it on a phone)** to see a bubble with the reason, the note, who changed it, when, and the old number. The submitted file still lists the edits as notes.
+
+**Latest ref movements** (New order > Advanced) are grouped by day: **Today**, **Yesterday**, then the weekday, each with "+ in · − sold" for that day and only the time on each row.
+
+**Alignment pass** on every screen at desktop and phone width: the service buttons (names and fees now line up whatever the key label), the "which chicken" buttons, the product-card key numbers (they no longer squeeze the price and stock), the ref cards, table headings that were cut off ("Chicken Category"), the ref movements table on a phone. Key labels are hidden on narrow windows and touch screens.
+
+**Tests:** `npm test` runs 194 automated tests. The screens were checked in headless Chromium at 1280 px and 375 px (no sideways scroll, no page errors, the bubble, the day groups).
+
+## Earlier: revision 13
+
+The database is upgraded in place (version 10 → 11) with a safety copy first (`data/pos.db.before-v11-<time>.bak`). One table is added (`inventory_saves`) and Katay / Dead sale lines get the chicken they came from (`order_ref_items.product_id`; an older sale gets it only when every head of that kind ever stored came from one chicken). Where this section and the older sections below disagree, **this section is the current behaviour**.
+
+**Daily Inventory: Save, and the midnight close**
+- *Closed Inventory Today and Reset the Day* is gone. **Save** keeps the open day's numbers in the database, **one row per day**; pressing it again replaces that row. The screen says "Saved … by …", "changed since" or "Not saved yet". *Submit Inventory Today* stays (the Excel file).
+- At **12:00 midnight (PH time)** the open day is saved one last time and **closed by itself**, and today opens with every New Total as its Beginning Balance. The server checks every minute and at start; any request after midnight also triggers it first, so a sale never lands on yesterday. Nothing stops it: Ongoing orders stay on the Order List (like Standby), and a New Total below zero starts the next day at 0. If the app was off for some days, the old day is closed once and today opens (no empty days). Its file is saved as `backups/inventory/inventory_<date>_closed-at-midnight.xlsx`; closed days stay listed as Closed with their Export button.
+- Because a day now always closes after its date, the business date no longer runs a day ahead (the reason the 15 Oct report looked empty).
+- Beginning Balance edits are now **notes under the tables** of the submitted / exported file (who, when, reason, note), only when there was an edit. The separate "Beginning Balance Edits" sheet is gone.
+
+**Katay / Dead from the ref, per chicken.** Selling Katay or Dead asks **which chicken it is** (B-Cull, Cull, Broiler …, with how many of each are in the ref; chosen already when there is only one). The ref is counted per kind and chicken, so "Insufficient stock" names the chicken. The line reads e.g. "Katay Chicken - B-Cull". The Advanced cards show the split (e.g. "B-Cull 2 · Broiler 1").
+
+**Daily Sales Report, redesigned (replaced in revision 14 by the paper-form layout above):** one page wide, A4 portrait, top to bottom. **SUMMARY** first (each chicken type with separate Live, Katay and Dead rows: heads, kilos, amount; then eggs, others, GROSS SALES, less discounts / refunds / expenses, NET SALES), then one section per chicken type (price, the paper-form balance boxes, SOLD = live heads, the ledger with its live total, and under it that chicken's Katay and Dead from the ref, each with its own totals), then EGGS, OTHERS, DISCOUNTS, EXPENSES and the CASH BREAKDOWN. **Heads and kilos of live, Katay and Dead are never added together**; only the amounts are, in GROSS SALES. A sale from before this revision whose chicken is unknown is listed last under "KATAY / DEAD (source not recorded)".
+
+**Keyboard shortcuts** (badges on the buttons on a computer with a keyboard; hidden on touch screens; **?** or the ⌨ Keys button lists them):
+- Anywhere: **F2** New order, **F4** Order List, **F8** Orders, **F9** Daily Inventory, **Esc** back / cancel.
+- Choosing: **1–9** (top row or number pad) picks the numbered product, **← →** switch Chicken / Other products / Advanced, **/** searches other products, **Enter** reviews the order.
+- One product: digits and **.** type the weight, **+ / −** (number pad too) change the heads or pieces, **Alt+1…9** pick the service / selling option / which chicken, **Enter** adds, **Esc** cancels.
+- Review: **P** next payment method (Cash puts the cursor in Money Received), **D** discount, **Space** ticks "I have reviewed", **Enter** submits when everything is filled in (or jumps to the review tick box when that is the only thing left).
+- Order saved: **Enter** new order, **Ctrl+P** print slip. Question boxes: **Enter** = the main button, **Esc** = cancel; a dangerous question (cancel an order …) starts on the safe button.
+
+**Tests:** `npm test` runs 192 automated tests (11 new in `tests/revision13.test.js`). The screens were driven in headless Chromium (a full order with the keyboard only, the Katay chicken chooser, Save, the shortcut list, phone width 375 px). `tests/e2e.mjs` is still from an older revision and was not updated.
+
+## Earlier: revision 12
 
 The database is upgraded in place (version 9 → 10) with a safety copy first (`data/pos.db.before-v10-<time>.bak`); only new tables are added, so no order, payment, price or stock number changes. Where this section and the older sections below disagree, **this section is the current behaviour**.
 
@@ -202,7 +345,7 @@ Runs once, automatically, when the new version starts on an older file, inside o
 npm start                 # your real shop data (data/pos.db)
 npm run demo              # sample data in data/demo.db, with sample stock
 npm test                  # 140 automated tests
-npm run test:e2e          # 62 browser checks (needs: npm install, npx playwright install chromium)
+npm run test:browser      # current browser checks (needs: npm install, npx playwright install chromium)  [revision 17; was test:e2e]
 ```
 
 Quick check by hand (use demo mode, not the real database): 1) New order: pick a chicken, choose Pour & Dukot and see no slice size is asked for. 2) Review: choose Cash, type Money Received 1000 on a ₱456.00 order, see Change ₱544.00. 3) Daily Inventory: see the order you just placed under Sold and the New Total drop. 4) Back on New order, export the CSV and Excel report. 5) Start New Business Day: Cancel (nothing changes), Export Report (the dialog stays), then Confirm, and see the next day's Beginning Balance equal the last New Total.
@@ -491,7 +634,7 @@ Orders > Spreadsheet export downloads `.xlsx` or `.csv` for the date range. The 
 7. Your request said "Try to make the appearance more" and was cut off; I read it as more modern and easier to scan (pictures, clearer cards).
 8. Other-product starter prices are unknown, so none were invented.
 
-**Hosting.** The app needs a computer that runs Node 22.13+ and keeps a file on disk (a shop PC, a small VPS, or a host with a persistent disk). Static hosts such as Netlify cannot run it. This was not deployed to any host during development.
+**Hosting.** The app needs a computer that runs Node 22.13+ and keeps a file on disk (a shop PC, a small VPS, or a host with a persistent disk). Static hosts such as Netlify cannot run it. This was not deployed to any host during development. **Update (revision 17):** a full step-by-step guide for going online is in [docs/deploy/online-hosting-guide.md](docs/deploy/online-hosting-guide.md).
 
 ## 5. Running the tests
 
@@ -499,7 +642,7 @@ Orders > Spreadsheet export downloads `.xlsx` or `.csv` for the date range. The 
 npm test                 # 157 tests: money, services, units, cash change, heads, discounts, daily report, sorting, database safeguards and upgrades (2→3→4→5→6→7→8), full API incl. payments, the Order List, bookmarks and Delete Account, the clear-records command, the Daily Inventory, stock, reports and closing, and the Revision 10 behaviour (reasons, italic note, Order List clearing, units, hidden rows, exports)
 npm install              # only for the browser test: installs Playwright
 npx playwright install chromium
-npm run test:e2e         # 67 checks driving the real screens in Chromium (the seven services, the cash calculator, stock lines, Daily Inventory and its reason box, the report and Whole Inventory downloads, Submit Closing Inventory, Order List clearing and zoom, drag and drop, right-click, folded and open cards, bookmarks, sorting, Delete Account, Orders vs Order List status and colours, and phone-size screens)
+npm run test:browser     # (revision 17: replaces test:e2e) checks driving the real screens in Chromium (the seven services, the cash calculator, stock lines, Daily Inventory and its reason box, the report and Whole Inventory downloads, Submit Closing Inventory, Order List clearing and zoom, drag and drop, right-click, folded and open cards, bookmarks, sorting, Delete Account, Orders vs Order List status and colours, and phone-size screens)
 ```
 
 Last results (Node 22.22, revision 10): `npm test` **157 of 157 passed**; browser test **67 of 67 passed**; the preview page's own browser checks **28 of 28 passed** (revision 10 preview). Both suites were also run from the unzipped package and from a folder whose name contains a space, such as `POS device` (see the final report for the exact results).

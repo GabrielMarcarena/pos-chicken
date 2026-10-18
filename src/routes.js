@@ -8,13 +8,13 @@ import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
   createOption, updateOption, getFeeConfig, updateFee, listPriceHistory, setProductImage, removeProductImage, getProductImage,
 } from './services/catalog.js';
-import { createOrder, getOrder, listOrders, listBoard, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
+import { createOrder, getOrder, listOrders, listBoard, listButcher, nextFreeTrackingNumber, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
 import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
-import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef } from './services/inventory.js';
+import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef, saveDay, savedDay } from './services/inventory.js';
 import { submitInventory, submissionFile, closeAndSubmit, closedDayExport } from './services/inventoryReport.js';
 import { refSummary } from './services/refStock.js';
-import { dayMoney, saveCashCount, addExpenses, removeExpense } from './services/cashbook.js';
+import { dayMoney, saveCashCount, saveCashOnHand, addExpenses, removeExpense } from './services/cashbook.js';
 import { CHICKEN_CATEGORIES, REF_LABELS } from '../shared/constants.js';
 import { toBusinessDate } from './time.js';
 
@@ -31,13 +31,21 @@ const idParam = (ctx) => {
   if (!Number.isInteger(id) || id < 1) throw new HttpError(404, 'Not found.', 'NOT_FOUND');
   return id;
 };
+/** The visitor's address. Only behind our own proxy (TRUST_PROXY=1) is the forwarded header believed, and then only its last entry (the one the proxy added). */
+export function clientIp(ctx) {
+  if (ctx.config?.trustProxy) {
+    const last = String(ctx.req.headers['x-forwarded-for'] ?? '').split(',').pop().trim();
+    if (last) return last;
+  }
+  return ctx.req.socket.remoteAddress;
+}
 const created = (body) => ({ __status: 201, body });
 
 export function registerRoutes(r) {
   // ---- Session ----
   r.add('POST', '/api/login', 'public', (ctx) => {
     const { username, password } = ctx.body;
-    const key = `${String(username ?? '').toLowerCase()}|${ctx.req.socket.remoteAddress}`;
+    const key = `${String(username ?? '').toLowerCase()}|${clientIp(ctx)}`;
     if (loginLimiter.blocked(key)) throw new HttpError(429, 'Too many tries. Wait 15 minutes, then try again.', 'RATE_LIMIT');
     const user = authenticate(ctx.db, username, password);
     if (!user) {
@@ -45,7 +53,8 @@ export function registerRoutes(r) {
       throw new HttpError(401, 'Wrong username or password.', 'BAD_LOGIN');
     }
     loginLimiter.clear(key);
-    ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, createSession(ctx.db, user.id, ctx.now()), 7 * 86400));
+    // The butcher TV (display account) keeps its sign-in for a year; everyone else for 7 days.
+    ctx.res.setHeader('Set-Cookie', sessionCookie(ctx, createSession(ctx.db, user.id, ctx.now()), (user.role === 'display' ? 365 : 7) * 86400));
     return { user };
   });
   r.add('POST', '/api/logout', 'public', (ctx) => {
@@ -110,6 +119,10 @@ export function registerRoutes(r) {
     const file = submissionFile(ctx.db, idParam(ctx), dir(ctx).dir);
     return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${file.name}"` }, body: file.body } };
   });
+  // Save (Revision 13): keep the open day's numbers in the database, one row per day. Saving again replaces it.
+  r.add('POST', '/api/inventory/save', 'manager', (ctx) => saveDay(ctx.db, ctx.user, ctx.now()));
+  r.add('GET', '/api/inventory/saved', 'cashier', (ctx) => savedDay(ctx.db, dateQuery(ctx)));
+  // Revision 13: the screen no longer has a close button (the day closes by itself at midnight). The close routes stay for the tests.
   // Closed Inventory Today and Reset the Day. Revision 12: with submit: true (what the screen sends) the inventory is submitted and the day
   // closed in ONE step. Without it, the Revision 11 rule applies: the day's inventory must already be submitted with its final numbers.
   r.add('GET', '/api/inventory/close-check', 'manager', (ctx) => closeCheck(ctx.db, ctx.user, ctx.now(), { ...dir(ctx), submitting: ctx.query.submit === '1' }));
@@ -126,6 +139,7 @@ export function registerRoutes(r) {
   r.add('GET', '/api/advanced', 'cashier', (ctx) => ({ ref: refSummary(ctx.db), money: dayMoney(ctx.db, ctx.user, {}, ctx.now()) }));
   // Store a Katay or Dead chicken in the ref: it is also added to that chicken's Katay or Dead on the Daily Inventory.
   r.add('POST', '/api/ref/store', 'cashier', (ctx) => created(storeInRef(ctx.db, ctx.user, ctx.body, ctx.now())));
+  r.add('POST', '/api/cash-on-hand', 'cashier', (ctx) => created(saveCashOnHand(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/cash-count', 'cashier', (ctx) => created(saveCashCount(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/expenses', 'cashier', (ctx) => created(addExpenses(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/expenses/:id/remove', 'cashier', (ctx) => removeExpense(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()));
@@ -144,9 +158,13 @@ export function registerRoutes(r) {
   });
   r.add('GET', '/api/orders', 'cashier', (ctx) => ({ orders: listOrders(ctx.db, ctx.query) }));
   // Order List (Kanban board): the latest saved pickup status of every open order, and moving a card.
-  r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db));
-  r.add('POST', '/api/orders/:id/fulfillment', 'cashier', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
-  r.add('PUT', '/api/orders/:id/bookmark', 'cashier', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
+  r.add('GET', '/api/board', 'assistant', (ctx) => listBoard(ctx.db, ctx.user));
+  // Tracking Number (Revision 15): the lowest free number, for the Auto button and for filling the box in on New order.
+  r.add('GET', '/api/tracking-number/next', 'cashier', (ctx) => ({ tracking_number: nextFreeTrackingNumber(ctx.db) }));
+  // Butcher screen (Revision 15): the open chicken orders with how to cut them, no prices. The display (TV) account may call only this one.
+  r.add('GET', '/api/butcher', 'display', (ctx) => listButcher(ctx.db));
+  r.add('POST', '/api/orders/:id/fulfillment', 'assistant', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
+  r.add('PUT', '/api/orders/:id/bookmark', 'assistant', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
   r.add('GET', '/api/orders/:id', 'cashier', (ctx) => ({ order: getOrder(ctx.db, idParam(ctx), ctx.user) }));
   r.add('POST', '/api/orders/:id/cancel', 'cashier', (ctx) => ({ order: cancelOrder(ctx.db, ctx.user, idParam(ctx), ctx.body, { now: ctx.now() }) }));
   r.add('POST', '/api/orders/:id/change', 'cashier', (ctx) => {
@@ -166,10 +184,12 @@ export function registerRoutes(r) {
   const dailyName = (args, ext) => `daily-sales-report_${args.date}${args.cashierId ? `_cashier-${args.cashierId}` : ''}.${ext}`;
   r.add('GET', '/api/daily-report.xlsx', 'cashier', (ctx) => {
     const args = dailyArgs(ctx);
-    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"` }, body: buildDailyXlsx(gatherDaily(ctx.db, args)) } };
+    const data = gatherDaily(ctx.db, args);
+    // X-Order-Count lets the screen say so when the report has no sales in it.
+    return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"`, 'X-Order-Count': String(data.orderCount) }, body: buildDailyXlsx(data) } };
   });
   // Who can be picked in the report's cashier filter.
-  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active).map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
+  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active && u.role !== 'display' && u.role !== 'assistant').map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
 
   // ---- Export (manager and admin) ----
   const exportName = (ctx, ext) => `chicken-pos_${ctx.query.from || 'start'}_to_${ctx.query.to || 'latest'}.${ext}`.replace(/[^A-Za-z0-9._-]/g, '');

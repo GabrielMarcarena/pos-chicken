@@ -1669,7 +1669,7 @@ await step('Users: Delete Account asks first, Cancel changes nothing, a double c
   await adminPage.waitForSelector('dialog[open]');
   const dlg = (await adminPage.locator('dialog').innerText()).replace(/\s+/g, ' ');
   assert.match(dlg, /Delete this user account\?/);
-  assert.match(dlg, /Are you sure you want to delete this account\? This action may permanently remove the user's access and associated account data\. Please confirm that you want to continue\./);
+  assert.match(dlg, /Delete this account\? The person can no longer sign in\./);   // Revision 16: shortened (the longer wording asked "Are you sure ... associated account data")
   assert.match(dlg, /spare\.one Person/); assert.match(dlg, /Username: spare\.one/); assert.match(dlg, /Cashier/);
   assert.deepEqual(await adminPage.locator('dialog .dlg-foot button').allInnerTexts(), ['Cancel', 'Delete Account']);
   await adminPage.screenshot({ path: '/tmp/shots/27-delete-dialog.png' });

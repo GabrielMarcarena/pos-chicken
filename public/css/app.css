@@ -237,6 +237,7 @@ table.data tr.clickable:hover td { background: var(--pine-tint); }
   .done { margin: 0; }
   .slip { border: 0; padding: 0; }
   .order-no-big { background: none; color: #000; border: 2px solid #000; }
+  .tracking-big { background: none; color: #000; border: 2px solid #000; }
 }
 
 /* ---- Revision 2: richer product cards, service cards, discount ---- */
@@ -439,7 +440,7 @@ table.inv .inv-input, .inv-input { width: 5.5rem; max-width: 100%; display: inli
 .inv-buttons .btn { min-height: 48px; font-weight: 700; }
 .inv-begin { white-space: nowrap; }
 .inv-prev { margin-left: .35rem; color: var(--muted); font-style: italic; font-size: .88rem; }
-.inv-why { display: block; margin-top: .15rem; font-size: .78rem; color: var(--amber); font-weight: 600; text-align: right; white-space: normal; max-width: 12rem; margin-left: auto; }
+.inv-why { display: none; margin-top: .15rem; font-size: .78rem; color: var(--amber); font-weight: 600; text-align: right; white-space: normal; max-width: 12rem; margin-left: auto; }
 .inv-hidden { margin-top: .8rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
 .inv-add { max-width: 380px; }
 .opt-unit { text-transform: capitalize; }
@@ -556,3 +557,214 @@ mark.hl--amber { background: linear-gradient(transparent 15%, #ffd98a 15%, #ffd9
 .exp-removed td { text-decoration: line-through; color: var(--muted); }
 .exp-removed .badge { text-decoration: none; display: inline-block; }
 @media (max-width: 560px) { .exp-line { grid-template-columns: 1fr 6.5rem auto; } }
+
+/* ---- Revision 13: keyboard shortcuts --------------------------------------------------------------------------------------------- */
+/* A small key label on a button (only drawn on devices with a keyboard; see keys.js). */
+.product-card { position: relative; }
+.key-badge { font: 700 .75rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: .2rem .4rem; border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 5px; background: var(--surface); color: var(--muted); white-space: nowrap; }
+.product-card > .key-badge { position: absolute; top: .45rem; right: .45rem; }
+.choice[aria-checked="true"] .key-badge { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .6); }
+@media (pointer: coarse) { .key-badge { display: none; } }
+.keys-title { margin: 1rem 0 .35rem; font-size: 1rem; }
+.keys-title:first-child { margin-top: 0; }
+.keys-table td { padding: .3rem .6rem; }
+.keys-table kbd { font: 700 .85rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: .15rem .45rem; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--pine-tint); }
+.choice[aria-checked="true"] .muted { color: rgba(255, 255, 255, .85); }
+
+/* ---- Revision 14: an edited Beginning Balance glows; its note is a bubble (no text under the number, so the rows stay level) ---- */
+.inv-box { position: relative; display: inline-block; max-width: 100%; border-radius: var(--radius-s); }
+.inv-box--edited { box-shadow: 0 0 0 3px rgba(245, 180, 40, .55), 0 0 12px 3px rgba(245, 180, 40, .65); cursor: help; }
+.inv-box--edited .inv-input { border-color: var(--amber); background: #fffaf0; }
+.inv-pen { position: absolute; top: -9px; left: -9px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; background: var(--amber); color: #fff; font-size: .68rem; line-height: 1; pointer-events: none; }
+.inv-tip { position: fixed; z-index: 60; max-width: min(18rem, calc(100vw - 16px)); padding: .6rem .8rem; border-radius: var(--radius-m); background: #26211a; color: #fff;
+  font-size: .85rem; line-height: 1.4; white-space: pre-line; box-shadow: 0 6px 22px rgba(0, 0, 0, .3); pointer-events: none; }
+.inv-tip[hidden] { display: none; }
+.inv-tip::first-line { font-weight: 800; color: #ffd36b; }
+
+/* ---- Revision 14: ref movements grouped by day ---- */
+.adv-table tr.adv-day th { background: var(--pine-tint); text-align: left; padding: .5rem .7rem; border-top: 2px solid var(--pine); }
+.adv-day-sum { float: right; font-weight: 700; }
+
+/* ---- Revision 14: alignment with the key labels ---- */
+/* Service buttons: the label (when there is one), the name and the fee each have their own column, so every name starts at the same place. */
+.choice.service { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: .8rem; }
+.choice.service > .key-badge { grid-column: 1; grid-row: 1; justify-self: start; }
+@media (pointer: fine) {
+  .choice.service { grid-template-columns: 3.7rem minmax(0, 1fr) auto; }
+  .choice.service > .svc-text { grid-column: 2; }
+  .choice.service > .svc-fee { grid-column: 3; }
+}
+.choice.service > .svc-text { text-align: left; }
+/* Other selling options and "which chicken": the label is pinned to the left of a centred name. */
+.choice:has(> .key-badge) { position: relative; padding-left: 4.2rem; padding-right: 1rem; }
+.choice:has(> .key-badge) > .key-badge { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); }
+.choice.service:has(> .key-badge) { position: static; padding-left: .9rem; }
+.choice.service > .key-badge { position: static; transform: none; }
+/* Product cards: the number sits in the corner, and only the name leaves room for it (so the price and stock lines keep their width). */
+.product-card:has(> .key-badge) .name { padding-right: 1.7rem; }
+/* On a narrow window (or a phone) the key labels would crowd the names: they are not drawn there. */
+@media (max-width: 700px) {
+  .key-badge { display: none !important; }
+  .choice:has(> .key-badge), .choice.service { padding-left: .9rem; }
+  .choice.service, .choice.service:has(> .key-badge) { grid-template-columns: minmax(0, 1fr) auto; }
+  .choice.service > .svc-text { grid-column: 1; }
+  .choice.service > .svc-fee { grid-column: 2; }
+}
+
+/* ---- Revision 14: more alignment fixes ---- */
+.ref-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: stretch; }
+.ref-card .meta { align-content: start; }
+.field:has([data-ref-from]) { margin-bottom: 1rem; }
+/* Table headings may use two lines (they were cut off: "Chicken Cate"). */
+table.inv thead th { white-space: normal; overflow-wrap: anywhere; line-height: 1.2; }
+/* Ref movements: keep the columns readable on a phone; the table scrolls sideways inside its box. */
+.adv-table { min-width: 560px; }
+.adv-table td:nth-child(2) { min-width: 15rem; }
+table.inv tbody th { padding-top: .95rem; }
+
+/* ---- Revision 15: Tracking Number ---- */
+.tracking-row { display: flex; gap: .5rem; align-items: center; }
+.tracking-row input { width: 6rem; font-family: var(--mono); font-weight: 800; font-size: 1.25rem; text-align: center; }
+.tracking-big { display: inline-block; margin-top: .6rem; font-size: 1.4rem; font-weight: 700; background: var(--tag); color: var(--tag-ink); padding: .4rem 1.2rem; border-radius: var(--radius-l); }
+.tracking-big strong { font-family: var(--mono); font-size: 2.6rem; margin-left: .4rem; vertical-align: middle; }
+.slip-tracking, .detail-tracking { font-family: var(--mono); font-size: 1.15rem; background: var(--tag); color: var(--tag-ink); padding: .05rem .5rem; border-radius: var(--radius-s); }
+.kcard-track { font-family: var(--mono); font-weight: 800; background: var(--tag); color: var(--tag-ink); border-radius: var(--radius-s); padding: 0 .45rem; font-size: 1rem; margin-left: auto; margin-right: .3rem; }
+
+/* ---- Revision 15: screens that show one job and nothing else (Butcher TV, Customer monitor) ---- */
+body.display-mode { background: #0e1512; color: #f2f5f0; overflow: hidden; }
+body.display-mode .topbar, body.display-mode .skip { display: none !important; }
+body.display-mode main { max-width: none; padding: 0; margin: 0; }
+body.display-mode .toasts { display: none; }
+
+/* Butcher: Ongoing is the screen. Standby is a quiet side list. */
+.bt { height: 100vh; display: flex; flex-direction: column; font-size: clamp(16px, 1.6vw, 28px); }
+.bt-head { display: flex; justify-content: space-between; align-items: center; padding: .5rem 1.2rem; background: #16231c; border-bottom: 3px solid var(--tag); }
+.bt-head h1 { font-size: 1.5em; letter-spacing: .25em; color: var(--tag); }
+.bt-head-r { display: flex; gap: 1.2rem; align-items: center; }
+.bt-clock { font-family: var(--mono); font-size: 1.3em; color: #c9d6cc; }
+.bt-offline { background: var(--danger); color: #fff; padding: .2rem .8rem; border-radius: 99px; font-weight: 700; }
+.bt-exit { color: #9fb3a6; font-size: .6em; }
+.bt-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 16em; }
+.bt-ongoing { padding: 1rem 1.2rem; overflow-y: auto; }
+.bt-standby { padding: 1rem; background: #121b16; border-left: 2px solid #26372d; overflow-y: auto; }
+.bt-h { display: flex; align-items: center; gap: .6rem; font-size: 1.5em; letter-spacing: .12em; text-transform: uppercase; color: var(--lcd-on); margin-bottom: .8rem; }
+.bt-h--dim { font-size: .8em; color: #7f9487; }
+.bt-n { background: var(--lcd-on); color: #10200f; border-radius: 99px; padding: 0 .6em; font-weight: 800; }
+.bt-h--dim .bt-n { background: #33463b; color: #b9c8be; }
+.bt-cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(26em, 1fr)); align-items: start; }
+.bt-card { display: flex; gap: 1rem; background: #1b2a22; border: 3px solid #3d5a49; border-left: 10px solid var(--lcd-on); border-radius: var(--radius-m); padding: .8rem 1rem; }
+.bt-new { border-color: var(--tag); border-left-color: var(--tag); animation: bt-glow 1.2s ease-in-out infinite alternate; }
+@keyframes bt-glow { from { box-shadow: 0 0 0 0 rgba(244,183,42,.0); } to { box-shadow: 0 0 22px 4px rgba(244,183,42,.65); } }
+.bt-tag { flex: none; min-width: 2.4em; font-family: var(--mono); font-weight: 800; font-size: 4.2em; line-height: 1; color: var(--tag); text-align: center; align-self: center; }
+.bt-hash { font-size: .45em; vertical-align: top; opacity: .8; }
+.bt-main { flex: 1; min-width: 0; }
+.bt-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .9rem; margin-bottom: .4rem; }
+.bt-cust { font-size: 1.35em; font-weight: 800; overflow-wrap: anywhere; }
+.bt-meta { color: #9fb3a6; font-size: .75em; }
+.bt-newtag { background: var(--tag); color: var(--tag-ink); font-weight: 800; border-radius: 6px; padding: 0 .5em; font-size: .8em; }
+.bt-lines { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.bt-line { border-top: 1px solid #36503f; padding-top: .4rem; }
+.bt-line-top { display: flex; justify-content: space-between; gap: .8rem; align-items: baseline; }
+.bt-prod { font-size: 1.15em; font-weight: 700; }
+.bt-qty { font-family: var(--mono); color: #d8e3db; white-space: nowrap; }
+.bt-prep { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .25rem; }
+.bt-service { background: var(--lcd-on); color: #10200f; font-weight: 800; font-size: 1.25em; text-transform: uppercase; border-radius: 8px; padding: .05em .55em; }
+.bt-extra { background: #fff; color: #10200f; font-weight: 800; font-size: 1.1em; text-transform: uppercase; border-radius: 8px; padding: .05em .55em; }
+.bt-empty { grid-column: 1 / -1; padding: 3rem 1rem; text-align: center; color: #6f8577; font-size: 1.4em; }
+.bt-sb { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.bt-sbrow { display: flex; gap: .7rem; align-items: baseline; padding: .3rem .6rem; background: #1a2620; border-radius: 8px; color: #93a79b; }
+.bt-sbtag { font-family: var(--mono); font-weight: 800; color: #b8a15a; }
+.bt-sbwho { overflow-wrap: anywhere; font-size: .85em; }
+.bt-sbempty { color: #5f7466; font-size: .85em; }
+
+/* Customer monitor */
+.cs { min-height: 100vh; padding: 2rem 3rem; display: flex; flex-direction: column; font-size: clamp(18px, 2vw, 34px); }
+.cs-title { font-size: 1.6em; color: var(--tag); margin-bottom: 1rem; }
+.cs-lines { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
+.cs-line { padding: .6rem 0; border-bottom: 1px solid #2a3a31; }
+.cs-line-main { display: flex; justify-content: space-between; gap: 1rem; font-size: 1.15em; font-weight: 700; }
+.cs-detail { color: #9fb3a6; font-size: .75em; }
+.cs-totals { border-top: 4px solid var(--tag); padding-top: 1rem; }
+.cs-sub { display: flex; justify-content: space-between; color: #b9c8be; }
+.cs-total { display: flex; justify-content: space-between; align-items: baseline; font-size: 1.6em; }
+.cs-total strong { font-family: var(--mono); font-size: 1.5em; color: var(--lcd-on); }
+.cs-pay { display: flex; gap: 3rem; justify-content: space-between; margin-top: .6rem; }
+.cs-pay > div { display: flex; flex-direction: column; }
+.cs-pay span { color: #9fb3a6; font-size: .8em; }
+.cs-pay strong { font-family: var(--mono); font-size: 1.5em; }
+.cs-change strong { color: var(--tag); font-size: 2em; }
+.cs-welcome { margin: auto; text-align: center; }
+.cs-logo { font-size: 5em; }
+.cs-welcome h1 { font-size: 2.4em; color: var(--tag); }
+.cs-tracking-label { margin-top: 1rem; color: #9fb3a6; }
+.cs-tracking { font-family: var(--mono); font-size: 5em; font-weight: 800; color: var(--tag); line-height: 1.1; }
+.cs-order-no { color: #7f9487; font-family: var(--mono); margin-top: .6rem; }
+@media (max-width: 900px) { .bt-grid { grid-template-columns: 1fr; } .bt-standby { border-left: 0; border-top: 2px solid #26372d; } }
+
+/* Revision 15: smooth changes on the Butcher screen. An order that leaves shrinks and fades; one that arrives grows and fades in. */
+.bt-card, .bt-sbrow { transform-origin: left center; }
+.bt-enter { animation: bt-in .5s ease both; }
+@keyframes bt-in { from { opacity: 0; transform: translateX(-24px) scale(.96); } to { opacity: 1; transform: none; } }
+.bt-sbrow.bt-enter { animation: bt-in-sb .9s ease both; }
+@keyframes bt-in-sb { 0% { opacity: 0; transform: translateX(-40px); background: var(--tag); color: var(--tag-ink); } 40% { opacity: 1; transform: none; background: var(--tag); color: var(--tag-ink); } 100% { background: #1a2620; } }
+.bt-leave { animation: bt-out .45s ease forwards; pointer-events: none; }
+@keyframes bt-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(.92) translateX(40px); } }
+@media (prefers-reduced-motion: reduce) { .bt-enter, .bt-leave { animation: none; } .bt-leave { opacity: 0; } }
+.bt-sbrow.bt-enter .bt-sbtag { color: inherit; }
+.bt-empty:not([hidden]), .bt-sbempty:not([hidden]) { animation: bt-fade .5s ease .45s both; }   /* wait until the last card has faded away */
+@keyframes bt-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- Revision 16: every role has its own coloured mouse pointer (a plain arrow and hand, no glow), so you can tell who is signed in ---- */
+/* Admin red, Manager yellow, Cashier green, Assistant Cashier blue. Only the pointer is coloured; the top bar looks the same for everyone.
+   Not on the Butcher or Customer screens or the sign-in page. */
+.role-badge { color: inherit; opacity: .8; font-weight: 400; }
+body[data-role="admin"]:not(.display-mode) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22%23ff2d2d%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 4 3, auto; }
+body[data-role="admin"]:not(.display-mode) :is(a[href], button:not(:disabled), summary, select, label[for], [role="tab"], [role="menuitem"], [draggable="true"], .clickable, input[type="checkbox"], input[type="radio"]) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22%23ff2d2d%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 11 3, pointer; }
+body[data-role="manager"]:not(.display-mode) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22%23ffd60a%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 4 3, auto; }
+body[data-role="manager"]:not(.display-mode) :is(a[href], button:not(:disabled), summary, select, label[for], [role="tab"], [role="menuitem"], [draggable="true"], .clickable, input[type="checkbox"], input[type="radio"]) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22%23ffd60a%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 11 3, pointer; }
+body[data-role="cashier"]:not(.display-mode) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22%2322c55e%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 4 3, auto; }
+body[data-role="cashier"]:not(.display-mode) :is(a[href], button:not(:disabled), summary, select, label[for], [role="tab"], [role="menuitem"], [draggable="true"], .clickable, input[type="checkbox"], input[type="radio"]) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22%2322c55e%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 11 3, pointer; }
+body[data-role="assistant"]:not(.display-mode) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M4 3 L4 22 L9 17.2 L12.4 25 L15.6 23.6 L12.2 15.9 L19 15.6 Z%22 fill=%22%233b82f6%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 4 3, auto; }
+body[data-role="assistant"]:not(.display-mode) :is(a[href], button:not(:disabled), summary, select, label[for], [role="tab"], [role="menuitem"], [draggable="true"], .clickable, input[type="checkbox"], input[type="radio"]) { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%220 0 32 32%22%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22none%22 stroke=%22%231d2a26%22 stroke-width=%223.6%22 stroke-linejoin=%22round%22/%3E%3Cpath d=%22M10.5 3.6a1.6 1.6 0 0 1 3.2 0V11h.6V9.4a1.6 1.6 0 0 1 3.2 0V11.6h.5v-.9a1.6 1.6 0 0 1 3.2 0v1.6h.2a1.5 1.5 0 0 1 2.9.6v4.6c0 3.8-2.6 6.8-6.4 6.8h-2.3c-2.1 0-3.6-1-4.9-2.6L6.2 16.3a1.7 1.7 0 0 1 2.6-2.2l1.7 1.6Z%22 fill=%22%233b82f6%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E") 11 3, pointer; }
+body[data-role]:not(.display-mode) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="button"]), textarea) { cursor: text; }
+
+/* ---- Revision 16: short line first, the full explanation folded under "How it works" ---- */
+details.how { margin: .35rem 0; }
+details.how > summary { cursor: pointer; color: var(--pine); font-weight: 600; font-size: .92rem; width: fit-content; }
+details.how[open] > summary { margin-bottom: .4rem; }
+details.how > .how-body, details.how > dl { color: var(--muted); font-size: .95rem; }
+details.how > .how-body > :first-child { margin-top: 0; }
+details.how--wide { width: 100%; }
+.cash-hand { max-width: 28rem; }
+
+/* ---- Revision 16: the printed receipt shows only the prices and the fees ---- */
+@media print {
+  .chip--prep { display: none !important; }
+}
+
+/* ---- Revision 16: feathers on click, and the chicken that wanders when nobody is there (fun.js). Never takes a click. ---- */
+#fun-layer { position: fixed; inset: 0; pointer-events: none; z-index: 2000; overflow: hidden; }
+.feather { position: absolute; width: 20px; height: 20px; margin: -10px 0 0 -10px; animation: feather-fly .8s ease-out forwards; filter: drop-shadow(0 1px 1px rgba(0,0,0,.25)); }
+@keyframes feather-fly {
+  0% { transform: translate(0, 0) scale(.5) rotate(0deg); opacity: 1; }
+  45% { transform: translate(var(--dx), var(--dy)) scale(1) rotate(calc(var(--rot) * .6)); opacity: 1; }
+  100% { transform: translate(calc(var(--dx) * 1.25), calc(var(--dy) + 46px)) scale(.9) rotate(var(--rot)); opacity: 0; }
+}
+.hen { position: absolute; left: 0; top: 0; width: 160px; height: 143px; will-change: transform; }
+.hen-flip { width: 100%; height: 100%; }
+.hen-body { width: 100%; height: 100%; filter: drop-shadow(0 3px 2px rgba(0,0,0,.22)); }
+.hen-body svg { display: block; overflow: visible; }
+.hen.walking .hen-body { animation: hen-bob .32s ease-in-out infinite alternate; }
+@keyframes hen-bob { from { transform: translateY(0); } to { transform: translateY(-4px); } }
+/* a peck leaves a small crack that fades in about 10 seconds, and a few bits of feed fly up */
+.crack { position: absolute; width: 58px; height: 58px; animation: crack-fade 10s ease-out forwards; }
+.crack svg { display: block; }
+@keyframes crack-fade { 0% { opacity: 1; } 12% { opacity: .95; } 100% { opacity: 0; } }
+.feed { position: absolute; width: 9px; height: 4px; margin: -2px 0 0 -4px; border-radius: 3px; background: #3a4a44; border: 1px solid #fff; animation: feed-fly .65s ease-out forwards; }
+@keyframes feed-fly {
+  0% { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .feather, .hen-body, .feed, .crack { animation: none !important; } .crack { opacity: .8; } }
+@media print { #fun-layer { display: none !important; } }

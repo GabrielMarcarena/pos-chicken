@@ -300,7 +300,7 @@ async function pictureDialog(kind, product) {
     title: `${product.name}: picture`,
     body: `<div id="picErr"></div>
       <div class="pic-preview"><span class="ico ico--large" id="picNow" aria-hidden="true">${productPicture(kind, product)}</span></div>
-      <p class="muted">This picture is shown on the New order card. Without one, the card shows an icon. A photo is made smaller before it is saved.</p>
+      <p class="muted">Shown on the New order card.</p>
       <div class="field"><label for="picFile">Choose a photo (JPEG, PNG or WebP)</label><input id="picFile" type="file" accept="image/jpeg,image/png,image/webp"></div>`,
     onOpen: (dlg) => {
       watchImages(dlg);

@@ -6,6 +6,8 @@
 //
 //   npm run clear-records                          asks you to type CLEAR before it deletes anything
 //   npm run clear-records -- --keep-price-history  keep the price history, clear only the orders
+//   npm run clear-records -- --everything          also delete the OPEN day (all stock numbers, cash counts, expenses) and every sign-in,
+//                                                  for going live. The app opens a fresh day by itself when it starts.
 //   npm run clear-records -- --confirm CLEAR       no question (for scripts; the safety copy is still made)
 //
 // Stop the app first (Ctrl+C). A safety copy of the whole database is saved next to it before anything is deleted.
@@ -15,10 +17,11 @@ import readline from 'node:readline/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../src/config.js';
 import { openDb } from '../src/db.js';
-import { clearRecords, countKept, countRecords } from '../src/clearRecords.js';
+import { clearRecords, countKept, countRecords, countSessions } from '../src/clearRecords.js';
 
 const args = process.argv.slice(2);
 const keepPriceHistory = args.includes('--keep-price-history');
+const everything = args.includes('--everything');
 const given = args.includes('--confirm') ? args[args.indexOf('--confirm') + 1] : null;
 const config = loadConfig();
 const stop = (message, code = 1) => { console.error(message); process.exit(code); };
@@ -42,19 +45,21 @@ peek.close();
 const db = openDb(config.dbPath);
 const versionNow = db.prepare('PRAGMA user_version').get().user_version;
 if (versionNow !== versionBefore) console.log(`Note: the database was upgraded from version ${versionBefore} to ${versionNow} first (a safety copy of the old file was saved next to it), the same upgrade that happens when the app starts.\n`);
-const will = countRecords(db);
+const will = countRecords(db, { everything });
 const kept = countKept(db);
-const nothing = !(will.orders || will.lines || will.payments || will.history || will.inventoryDays || (!keepPriceHistory && will.priceChanges));
+const sessions = countSessions(db);
+const nothing = !(will.orders || will.lines || will.payments || will.history || will.inventoryDays || (everything && (will.inventoryRecords || sessions)) || (!keepPriceHistory && will.priceChanges));
 if (nothing) { db.close(); stop('There are no orders, closed inventory days or price history to clear. Nothing was deleted.', 0); }
 
 console.log(`Database: ${config.dbPath}\n`);
 console.log('This will PERMANENTLY DELETE:');
 console.log(`  - ${will.orders} order(s), with ${will.lines} item line(s), ${will.payments} payment record(s) and ${will.history} history entries`);
-console.log(`  - ${will.inventoryDays} closed Daily Inventory day(s), with ${will.inventoryRecords} stock record(s)`);
+console.log(`  - ${will.inventoryDays} ${everything ? '' : 'closed '}Daily Inventory day(s), with ${will.inventoryRecords} stock record(s)`);
+if (everything) console.log(`  - ALSO the open business day with every number typed on it, and ${sessions} sign-in(s) (everyone signs in again)`);
 console.log(keepPriceHistory ? '  (the price history is kept)' : `  - ${will.priceChanges} price history entries`);
 console.log('\nThis stays exactly as it is:');
 console.log(`  - ${kept.users} user account(s), ${kept.chickenProducts} chicken product(s), ${kept.otherProducts} other product(s), the current prices and the service fees`);
-console.log(`  - the open business day and the stock numbers typed on it (Beginning Balance, Additional, Reject, Dead, Pull Out)`);
+if (!everything) console.log(`  - the open business day and the stock numbers typed on it (Beginning Balance, Additional, Reject, Dead, Pull Out)`);
 console.log('\nOrder numbers will start again at -001. A safety copy is saved first.\n');
 
 let answer = given;
@@ -82,7 +87,7 @@ try {
 }
 
 try {
-  const deleted = clearRecords(db, { keepPriceHistory });
+  const deleted = clearRecords(db, { keepPriceHistory, everything });
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   console.log(`\nDone. Deleted ${deleted.orders} order(s)${keepPriceHistory ? '' : ` and ${deleted.priceChanges} price history entries`}.`);
   console.log(`Safety copy (everything as it was before): ${copy}`);

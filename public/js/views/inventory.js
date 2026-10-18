@@ -1,17 +1,18 @@
 // Daily Inventory: the stock of every product for one business day, and (below the tables) what the shop does with it:
-// Submit Inventory Today and Closed Inventory Today and Reset the Day (Revision 12: it submits and closes in one step). A closed day has
-// an Export button beside its "Closed" status (Revision 12, in place of Export Inventory History).
+// Save (Revision 13: keeps today's numbers in the database, one row per day) and Submit Inventory Today (the Excel file). The day closes
+// by itself at midnight (Revision 13, in place of "Closed Inventory Today and Reset the Day"). A closed day has an Export button beside
+// its "Closed" status (Revision 12, in place of Export Inventory History).
 //
 // The numbers come from the server (src/services/inventory.js), the same ones the New order screen uses for "Number of Heads".
 // Sold is counted from the saved orders and cannot be typed. A manager or the admin types Beginning Balance, Additional and, for
 // chicken, the inventory losses Reject, Katay, Dead and Pull Out. Each number is saved as soon as it is entered. Changing a Beginning
 // Balance that already has a number is a correction: the screen asks for a reason, and the server keeps it in the history.
 import { api } from '../api.js';
-import { $, esc, toast, errorBox, openDialog, fmtDateTime } from '../util.js';
+import { $, esc, howItWorks, toast, errorBox, openDialog, fmtDateTime } from '../util.js';
 import { CHICKEN_COLUMNS, OTHER_COLUMNS, formatQty, previousBeginningText } from '/shared/inventory.js';
 import { INVENTORY_REASONS, REF_LABELS } from '/shared/constants.js';
 import {
-  SUBMIT_BUTTON_TEXT, CLOSE_BUTTON_TEXT, CLOSE_ACTION_TEXT, EXPORT_BUTTON_TEXT, closeInventoryDay, submitInventoryToday, exportClosedDay, redownload, submissionText,
+  SUBMIT_BUTTON_TEXT, SAVE_BUTTON_TEXT, EXPORT_BUTTON_TEXT, saveInventory, savedText, submitInventoryToday, exportClosedDay, redownload, submissionText,
 } from './dayTools.js';
 
 const REFRESH_MS = 15_000;
@@ -30,7 +31,11 @@ export async function mountInventory(root) {
   view.pinned = new Set();
   root.onchange = onChange;
   root.onkeydown = onKeyDown;
-  root.onclick = onClick;
+  root.onclick = (e) => { const b = tipBox(e); if (b) showTip(b); else hideTip(); return onClick(e); };   // a tap shows the note; a tap elsewhere hides it
+  root.onmouseover = (e) => { const b = tipBox(e); if (b) showTip(b); };
+  root.onmouseout = (e) => { if (tipBox(e) && !tipBox(e).contains(e.relatedTarget)) hideTip(); };
+  root.onscroll = hideTip;
+  hideTip();
   root.innerHTML = '<p class="muted">Loading the inventory...</p>';
   await load();
   startPolling();
@@ -70,20 +75,50 @@ const inputMode = (row) => (row.kind === 'OTHER' && row.sold_by === 'PER_KG' ? '
 
 /** "Incorrect inventory", or the person's own words when the reason was "Other". */
 const whyText = (e) => (e.reason_code === 'OTHER' && e.note ? e.note : e.reason);
-const whyTitle = (e) => `Beginning Balance was ${num(e.was)} before this correction. Changed by ${e.by} on ${fmtDateTime(e.at)}. Reason: ${e.reason}${e.note ? `. Note: ${e.note}` : ''}`;
+/** The note of an edited Beginning Balance, one fact per line (shown in the bubble when the box is hovered or tapped). */
+const whyLines = (e) => [`Edited: ${whyText(e)}`, `Was ${num(e.was)} before this correction`, `Changed by ${e.by}`, fmtDateTime(e.at), ...(e.reason_code === 'OTHER' || !e.note ? [] : [`Note: ${e.note}`])];
 
-/** Beginning Balance: the number (typed, or carried over), the small italic previous-day note, and the "Edited" reason when it was corrected. */
+/**
+ * Beginning Balance: the number (typed, or carried over) and the small italic previous-day note. A corrected Beginning Balance glows and
+ * has a small pen mark; its reason, note, who and when appear in a bubble on hover or tap (Revision 14), so nothing is printed under
+ * the number and the rows stay level.
+ */
 function beginningCell(row) {
   const prev = previousBeginningText(row);
+  const edit = row.beginning_edit;
+  const label = `${esc(row.name)} Beginning Balance${edit ? ` (edited: ${esc(whyText(edit))})` : ''}`;
   const input = editable(row, 'beginning')
-    ? `<input class="inv-input" type="text" inputmode="${inputMode(row)}" autocomplete="off" data-field="beginning" value="${esc(num(row.beginning))}" aria-label="${esc(row.name)} Beginning Balance">`
+    ? `<input class="inv-input" type="text" inputmode="${inputMode(row)}" autocomplete="off" data-field="beginning" value="${esc(num(row.beginning))}" aria-label="${label}">`
     : `<span data-col="beginning" ${row.beginning_carried ? 'title="Carried over from the previous day\'s New Total"' : ''}>${esc(num(row.beginning))}</span>`;
+  const box = edit
+    ? `<span class="inv-box inv-box--edited" data-edited data-edit-tip="${esc(whyLines(edit).join('\n'))}">${input}<span class="inv-pen" aria-hidden="true">✎</span></span>`
+    : input;
   const note = prev ? ` <i class="inv-prev" data-prev title="The previous business day's Beginning Balance and its date (month/day/year)">${esc(prev)}</i>` : '';
-  const edit = row.beginning_edit
-    ? `<span class="inv-why" data-edited title="${esc(whyTitle(row.beginning_edit))}"><strong>Edited:</strong> ${esc(whyText(row.beginning_edit))}</span>`
-    : '';
-  return `<td class="num inv-begin">${input}${note}${edit}</td>`;
+  return `<td class="num inv-begin">${box}${note}</td>`;
 }
+
+// ---- The note bubble of an edited Beginning Balance: one bubble for the page, placed beside the box that is hovered or tapped ----
+let tipEl = null;
+function hideTip() { if (tipEl) tipEl.hidden = true; }
+function showTip(box) {
+  if (!tipEl?.isConnected) {
+    tipEl = document.createElement('div');
+    tipEl.className = 'inv-tip';
+    tipEl.setAttribute('role', 'tooltip');
+    document.body.append(tipEl);
+  }
+  tipEl.textContent = box.dataset.editTip;
+  tipEl.hidden = false;
+  const r = box.getBoundingClientRect();
+  const t = tipEl.getBoundingClientRect();
+  const gap = 8;
+  let left = Math.min(Math.max(8, r.right - t.width), window.innerWidth - t.width - 8);   // right edges line up, kept on the screen
+  let top = r.bottom + gap;
+  if (top + t.height > window.innerHeight - 8) top = Math.max(8, r.top - t.height - gap);   // no room below: above the box
+  tipEl.style.left = `${left}px`;
+  tipEl.style.top = `${top}px`;
+}
+const tipBox = (e) => e.target.closest?.('[data-edit-tip]');
 
 function cell(row, key, field) {
   if (key === 'beginning') return beginningCell(row);
@@ -148,31 +183,43 @@ function submissionHtml(d, open) {
   if (!s) return open ? '<p class="inv-sub inv-sub--none" data-submission="none">Today\'s inventory has not been submitted yet.</p>' : '';
   const again = `<button type="button" class="btn btn--small btn--plain" data-inv="redownload" data-id="${s.id}" data-name="${esc(s.file_name)}">Download the submitted file</button>`;
   if (d.submission.current) return `<p class="inv-sub inv-sub--ok" data-submission="current">${esc(submissionText(s))}. ${again}</p>`;
-  return `<p class="inv-sub inv-sub--stale" data-submission="stale">${esc(submissionText(s))}, but the numbers have changed since (an order, a cancellation or a typed number). Submit it again before closing the day. ${again}</p>`;
+  return `<p class="inv-sub inv-sub--stale" data-submission="stale">${esc(submissionText(s))}, but the numbers have changed since (an order, a cancellation or a typed number). Submit it again for a file with the latest numbers. ${again}</p>`;
+}
+
+/** Where today's Save stands (Revision 13): not yet, saved with the numbers of now, or saved but the numbers have changed since. */
+function savedHtml(d, open) {
+  const s = d.saved;
+  if (!s) return open ? '<p class="inv-sub inv-sub--none" data-saved="none">Not saved yet. Press Save to keep today\'s numbers. At midnight the day is saved and closed by itself.</p>' : '';
+  if (s.current) return `<p class="inv-sub inv-sub--ok" data-saved="current">${esc(savedText(s))}.</p>`;
+  return `<p class="inv-sub inv-sub--stale" data-saved="stale">${esc(savedText(s))}, but the numbers have changed since. Press Save again to keep the latest numbers.</p>`;
 }
 
 /** The actions, in their own section below the inventory tables (Revision 11). */
 function actionsHtml(d, open) {
   const canAct = d.can_close;   // managers and the admin, on the open day
   let hint = '';
-  if (!open) hint = `This business day is closed. To submit or close a day, choose the open business day (${d.open_day.business_date}) above. To download this closed day, press ${EXPORT_BUTTON_TEXT} beside "Closed" at the top.`;
-  else if (!canAct) hint = 'Only a manager or the admin can submit the inventory and close the day.';
+  if (!open) hint = `This business day is closed. To save or submit, choose the open business day (${d.open_day.business_date}) above. To download this closed day, press ${EXPORT_BUTTON_TEXT} beside "Closed" at the top.`;
+  else if (!canAct) hint = 'Only a manager or the admin can save and submit the inventory.';
   return `<section class="panel inv-actions" aria-labelledby="invActionsTitle">
       <div class="panel-head"><h3 id="invActionsTitle">Inventory actions</h3></div>
+      ${savedHtml(d, open)}
       ${submissionHtml(d, open)}
       <div class="inv-buttons">
-        <button type="button" class="btn btn--primary" data-inv="submit" ${canAct ? '' : 'disabled'}>${esc(SUBMIT_BUTTON_TEXT)}</button>
-        <button type="button" class="btn btn--danger" data-inv="close" ${canAct ? '' : 'disabled'}>${esc(CLOSE_BUTTON_TEXT)}</button>
+        <button type="button" class="btn btn--primary" data-inv="save" ${canAct ? '' : 'disabled'}>${esc(SAVE_BUTTON_TEXT)}</button>
+        <button type="button" class="btn" data-inv="submit" ${canAct ? '' : 'disabled'}>${esc(SUBMIT_BUTTON_TEXT)}</button>
       </div>
       ${hint ? `<p class="muted mt-s" data-inv-hint>${esc(hint)}</p>` : ''}
-      <dl class="inv-help">
+      <p class="muted mt-s">Save keeps today's numbers. The day closes by itself at midnight.</p>
+      <details class="how"><summary>What each button does</summary><dl class="inv-help">
+        <div><dt>${esc(SAVE_BUTTON_TEXT)}</dt>
+          <dd>Keeps today's numbers in the database: <strong>one saved record per day</strong>. Press it again any time; the newer numbers replace the older ones. Nothing is downloaded and nothing is reset.</dd></div>
+        <div><dt>At midnight <span class="muted">(automatic)</span></dt>
+          <dd>At 12:00 midnight the app <strong>saves and closes ${esc(d.open_day.business_date)} by itself</strong>, even if nobody pressed Save, and starts the new day. Each New Total becomes the new day's Beginning Balance; Additional, Reject, Katay, Dead and Pull Out start at 0. The Excel file of the closed day is saved on this computer (backups/inventory). Ongoing and Standby orders stay on the Order List; Complete orders leave it (they stay saved). Closed days are kept and can be opened under <strong>Business day</strong>.</dd></div>
         <div><dt>${esc(SUBMIT_BUTTON_TEXT)}</dt>
           <dd>Saves today's inventory as an Excel file on this computer and downloads a copy: every chicken product (Beginning Balance, Additional, Total, Sold, Left, Reject, Katay, Dead, Pull Out, New Total) and every other product (Beginning Balance, Additional, Sold, Left, New Total). Products with 0 in every column are left out, and the file says so. It changes nothing; use it whenever you want a copy during the day.</dd></div>
-        <div><dt>${esc(CLOSE_BUTTON_TEXT)}</dt>
-          <dd>One step: it <strong>submits today's inventory</strong> (the same Excel file, saved and downloaded) <strong>and closes ${esc(d.open_day.business_date)}</strong>, which then shows as "${esc(d.open_day.business_date)} (closed)". It asks only <em>Cancel</em> or <em>${esc(CLOSE_ACTION_TEXT)}</em>. No order may still be Ongoing. Each New Total becomes the next Beginning Balance; Complete orders leave the Orders tab and the Order List (they stay saved); Standby orders stay.</dd></div>
         <div><dt>${esc(EXPORT_BUTTON_TEXT)} <span class="muted">(closed days)</span></dt>
           <dd>Choose a closed day under <strong>Business day</strong> above: an <strong>${esc(EXPORT_BUTTON_TEXT)}</strong> button appears beside "Closed". It downloads that day's inventory as it was closed, laid out like the submitted file (chicken products, then other products). It changes nothing.</dd></div>
-      </dl>
+      </dl></details>
       <div id="invMsg" role="status" aria-live="polite"></div>
     </section>`;
 }
@@ -190,7 +237,8 @@ function notebookHtml() {
         <li><mark class="hl hl--amber">Reject, Katay, Dead and Pull Out</mark> are inventory losses, not sales and not discounts. <b>Katay</b> is a dying chicken slaughtered and bled at once so the meat is not damaged. A Dead or Katay <em>discount</em> on an order changes the price only, never these numbers.</li>
         <li>Katay and Dead chicken kept ${hl('in the ref')}: storing one from <b>New order &gt; Advanced</b> adds it here too. When you type a higher Katay or Dead here, the screen asks whether it went into the ref; only a "yes" adds it to the ref stock.</li>
         <li>The small <i>italic</i> number beside a Beginning Balance is the ${hl('previous business day\'s Beginning Balance')} and its date (month/day/year), for reference.</li>
-        <li>A manager or the admin can ${hl('correct a Beginning Balance')} that already has a number; the screen asks for a reason and the correction is kept in the history.</li>
+        <li>A manager or the admin can ${hl('correct a Beginning Balance')} that already has a number; the screen asks for a reason and the correction is kept in the history. The submitted file lists each correction as a note: who, the reason and the note.</li>
+        <li>At ${hl('12:00 midnight')} the day is <mark class="hl hl--amber">saved and closed by itself</mark>, and today's ${hl('New Total')} becomes tomorrow's ${hl('Beginning Balance')}.</li>
       </ol>
     </section>`;
 }
@@ -204,7 +252,7 @@ function render() {
   const hidden = d.other.filter((r) => r.empty && !view.pinned.has(r.id));
   let banner = '';
   if (!open) banner = '<div class="note-box" data-inv-note="closed">This business day is <strong>closed</strong>. Its numbers are saved history and cannot be changed.</div>';
-  else if (d.day.stale) banner = `<div class="note-box stale-note" role="status" data-inv-note="stale">This business day (<strong>${esc(d.day.business_date)}</strong>) is still open. A manager closes it below with <strong>${esc(CLOSE_BUTTON_TEXT)}</strong> (it submits the inventory too).</div>`;
+  else if (d.day.stale) banner = `<div class="note-box stale-note" role="status" data-inv-note="stale">This business day (<strong>${esc(d.day.business_date)}</strong>) is from an earlier date. It is saved and closed automatically within a minute.</div>`;
   else if (!d.can_edit) banner = '<div class="note-box" data-inv-note="readonly">You can look at these numbers. A manager or the admin types them in.</div>';
   view.root.innerHTML = `
     <div class="section-title"><h2>Daily Inventory</h2></div>
@@ -221,7 +269,7 @@ function render() {
     <section class="panel" aria-labelledby="invOther"><div class="panel-head"><h3 id="invOther">Other Products</h3><span class="muted">counted in pieces (or packs, sacks, cartons, trays); things sold by the kilo are counted in pieces too</span></div>
       ${tableHtml('other', OTHER_COLUMNS, shown(d.other))}
       ${hiddenNote(hidden, open && d.can_edit)}</section>
-    ${notebookHtml()}
+    <details class="how how--wide"><summary>How the numbers are worked out</summary>${notebookHtml()}</details>
     ${actionsHtml(d, open)}`;
 }
 
@@ -393,11 +441,16 @@ async function onClick(e) {
       lock(false);
       return undefined;
     }
-    case 'close':
-      return closeInventoryDay(view.data.open_day.business_date, async (closed) => {
-        view.date = null; view.pinned = new Set(); await load();
-        showMessage(`<div class="ok-box" role="status"><strong>${esc(closed.closed.business_date)} is closed and its inventory was submitted (${esc(closed.submission.file_name)}).</strong><br>The new business day is ${esc(closed.opened.business_date)}. To download the closed day again, choose it under Business day and press ${esc(EXPORT_BUTTON_TEXT)}.</div>`);
-      });
+    case 'save': {
+      lock(true);
+      showMessage('<p class="muted">Saving...</p>');
+      const r = await saveInventory((h) => { view.lastMessage = h; });
+      if (r) toast('Inventory saved.', 'ok'); else toast('The inventory was not saved.', 'error');
+      await load({ quiet: true });   // show the new saved status
+      showMessage(view.lastMessage ?? '');
+      lock(false);
+      return undefined;
+    }
     case 'export': {
       lock(true);
       const box = $('#invExportMsg');

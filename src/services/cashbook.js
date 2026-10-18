@@ -116,6 +116,25 @@ export function latestCashCount(db, dayId, cashierId = null) {
   return c ? { id: c.id, counts: JSON.parse(c.counts), total_centavos: c.total_centavos, by: c.by_name, counted_at: c.counted_at } : null;
 }
 
+/** The starting cash of a business day (the latest amount saved), or null when none was set. */
+export function latestCashOnHand(db, dayId) {
+  const c = db.prepare(`SELECT c.*, u.display_name AS by_name FROM cash_on_hand c JOIN users u ON u.id = c.set_by WHERE c.business_day_id = ? ORDER BY c.id DESC LIMIT 1`).get(dayId);
+  return c ? { id: c.id, amount_centavos: c.amount_centavos, by: c.by_name, set_at: c.set_at } : null;
+}
+
+/** Set the cash on hand (starting cash) of the open business day. body: { amount: '1500' }. Saving again adds a new row; the latest one counts. */
+export function saveCashOnHand(db, user, body, now = new Date()) {
+  const amount = parsePesosToCentavos(body?.amount);
+  if (amount === null || amount < 0) throw new HttpError(400, 'Type the cash on hand, for example 1500. Use 0 if there is none.', 'VALIDATION');
+  if (amount > MAX_EXPENSE_CENTAVOS) throw new HttpError(400, 'That amount is too large. Check the number.', 'VALIDATION');
+  prepareOpenDay(db, now, user);
+  return tx(db, () => {
+    const day = db.prepare("SELECT * FROM business_days WHERE status = 'OPEN'").get();
+    db.prepare('INSERT INTO cash_on_hand (business_day_id, amount_centavos, set_by, set_at) VALUES (?,?,?,?)').run(day.id, amount, user.id, now.toISOString());
+    return dayMoney(db, user, {}, now, day);
+  });
+}
+
 /** Save a cash count for the open business day. body: { counts: { '1000': '3', '500': '2', ..., '0.25': '8' } } (pieces; blank = 0). */
 export function saveCashCount(db, user, body, now = new Date()) {
   const given = body?.counts && typeof body.counts === 'object' ? body.counts : null;
@@ -153,11 +172,14 @@ export function dayMoney(db, viewer, { date } = {}, now = new Date(), knownDay =
   const expensesTotal = expenseTotal(expenses);
   const sales = cashSales(db, day.id);
   const count = latestCashCount(db, day.id);
-  const expected = sales.cash - expensesTotal;
+  const onHand = latestCashOnHand(db, day.id);
+  // Revision 16: the starting cash (cash on hand) is in the drawer too, so it is part of what the drawer should hold.
+  const expected = (onHand?.amount_centavos ?? 0) + sales.cash - expensesTotal;
   return {
     business_date: day.business_date, status: day.status, can_edit: day.status === 'OPEN',
     denominations: CASH_DENOMINATIONS,
     cash_count: count,
+    cash_on_hand: onHand, cash_on_hand_centavos: onHand?.amount_centavos ?? 0,
     expenses, expenses_total_centavos: expensesTotal,
     cash_sales_centavos: sales.cash, non_cash_centavos: sales.non_cash,
     expected_cash_centavos: expected,

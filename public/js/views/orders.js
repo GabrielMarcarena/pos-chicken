@@ -1,7 +1,7 @@
 // Order history: find an order by number, see exactly what was saved, and cancel, change or refund it.
 import { api, download } from '../api.js';
-import { state, saveDraft, newDraft, refreshConfig, stockOptionOf } from '../state.js';
-import { $, esc, label, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
+import { state, saveDraft, newDraft, refreshConfig, stockOptionOf, findProduct } from '../state.js';
+import { $, esc, label, howItWorks, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
 import { REASONS, ACTION_LABELS, PAYMENT_METHODS, STATUS_LABELS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE } from '/shared/constants.js';
 import { orderTable } from './slip.js';
 import { resetCheckoutUi } from './checkout.js';
@@ -24,7 +24,7 @@ export async function mountOrders(root) {
         <div class="field"><label for="fview">Show</label><select id="fview">
           <option value="current" ${filters.view === 'current' ? 'selected' : ''}>Today's orders (open business day)</option>
           <option value="all" ${filters.view === 'all' ? 'selected' : ''}>All saved orders, by date</option></select></div>
-        <div class="field"><label for="fq">Order number or customer</label><input id="fq" type="text" value="${esc(filters.q)}" placeholder="ORD-20261009-001" autocomplete="off"></div>
+        <div class="field"><label for="fq">Order number, customer or tracking no.</label><input id="fq" type="text" value="${esc(filters.q)}" placeholder="ORD-20261009-001 or #5" autocomplete="off"></div>
         <div class="field" data-dates ${filters.view === 'current' ? 'hidden' : ''}><label for="ffrom">From</label><input id="ffrom" type="date" value="${esc(filters.from)}"></div>
         <div class="field" data-dates ${filters.view === 'current' ? 'hidden' : ''}><label for="fto">To</label><input id="fto" type="date" value="${esc(filters.to)}"></div>
         <div class="field"><label for="fstatus">Status</label><select id="fstatus">${statusOptions}</select></div>
@@ -34,7 +34,8 @@ export async function mountOrders(root) {
     </div>
     <div class="panel">
       <div class="panel-head"><h2>Daily Sales Report</h2></div>
-      <p class="muted">The report from your paper form, filled in with what the app knows: sales by chicken type (and Katay / Dead from the ref), heads, kilos, prices, service, eggs, other products, the list of discounts, the expenses and the cash breakdown typed in New order &gt; Advanced, and the totals. The chicken and egg balances are left empty for you to count by hand. The date is the business day the orders were sold on.${isManager() ? '' : ' It shows your own sales.'}</p>
+      <p class="muted">The day's sales on your paper form, as an Excel file.${isManager() ? '' : ' It shows your own sales.'}</p>
+      ${howItWorks(`<p>The report from your paper form, filled in with what the app knows: sales by chicken type (and Katay / Dead from the ref), heads, kilos, prices, service, eggs, other products, the list of discounts, the expenses and the cash breakdown typed in New order &gt; Advanced, and the totals. The chicken and egg balances are left empty for you to count by hand. The date is the business day the orders were sold on.</p>`)}
       <div id="dailyError"></div>
       <div class="filters mt-s">
         <div class="field"><label for="dDate">Report date</label><input id="dDate" type="date" value="${esc(todayPH())}"></div>
@@ -44,11 +45,12 @@ export async function mountOrders(root) {
     </div>
     ${isManager() ? `<div class="panel">
       <div class="panel-head"><h2>Spreadsheet export</h2></div>
-      <p class="muted">Downloads the orders sold on the business days from <strong>From</strong> to <strong>To</strong> above (choose "All saved orders, by date" to set them).
+      <p class="muted">Download the orders between <strong>From</strong> and <strong>To</strong> above.</p>
+      ${howItWorks(`<p>Choose "All saved orders, by date" above to set the dates.
         <strong>Excel</strong> has every detail of every order (canceled orders in red, with daily, weekly and monthly summaries).
         <strong>Sales List</strong> has only the important report columns of the orders that were sold, one row per item, as an Excel file whose
         columns are wide enough to read. <strong>CSV</strong> is the same list as plain text for other programs; a CSV file cannot remember column
-        widths, so Excel opens it with narrow columns.</p>
+        widths, so Excel opens it with narrow columns.</p>`)}
       <div id="exportError"></div>
       <div class="btn-row mt-s">
         <button type="button" class="btn btn--primary" id="exportXlsx">Download Excel (.xlsx)</button>
@@ -64,11 +66,21 @@ export async function mountOrders(root) {
     $('#viewHint').textContent = viewHint();
     load();
   };
+  // The report date starts on the open business day, which can be later than today's date if a day was closed early.
+  let openDay = null;
+  api('GET', '/api/board').then((b) => { openDay = b.open_day; if (openDay) $('#dDate').value = openDay; }).catch(() => {});
   $('#dailyXlsx').onclick = async () => {
     $('#dailyError').innerHTML = '';
     const qs = new URLSearchParams({ date: $('#dDate').value || todayPH() });
     if (isManager() && $('#dCashier').value) qs.set('cashier', $('#dCashier').value);
-    try { await download(`/api/daily-report.xlsx?${qs}`, 'daily-sales-report.xlsx'); toast('Daily report downloaded.', 'ok'); }
+    try {
+      let count = null;
+      await download(`/api/daily-report.xlsx?${qs}`, 'daily-sales-report.xlsx', (res) => { const h = res.headers.get('X-Order-Count'); count = h === null ? null : Number(h); });
+      if (count === 0) {
+        const open = openDay ? ` The open business day is ${openDay}; try that date.` : '';
+        $('#dailyError').innerHTML = `<div class="error-box" role="alert"><strong>No sales on ${esc(qs.get('date'))}, so the downloaded report is empty. Reports follow the business day the order was sold on, not the calendar date.${esc(open)}</strong></div>`;
+      } else toast('Daily report downloaded.', 'ok');
+    }
     catch (err) { $('#dailyError').innerHTML = errorBox(err); }
   };
   if (isManager()) {
@@ -135,9 +147,10 @@ async function load({ quiet = false } = {}) {
     }
     box.innerHTML = `<p class="muted">${orders.length} ${orders.length === 1 ? 'order' : 'orders'}${orders.length >= 200 ? ' (showing the latest 200)' : ''}</p>
       <div class="table-wrap"><table class="data">
-        <thead><tr><th>Order number</th><th>Date and time</th><th>Customer</th><th class="num">Items</th><th class="num">Total</th><th>Status</th><th>Cashier</th></tr></thead>
+        <thead><tr><th>Order number</th><th>Tracking No.</th><th>Date and time</th><th>Customer</th><th class="num">Items</th><th class="num">Total</th><th>Status</th><th>Cashier</th></tr></thead>
         <tbody>${orders.map((o) => `<tr class="clickable row--${o.status.toLowerCase().replace('partially_refunded', 'refunded')}" data-open="${o.id}" data-order-id="${o.id}">
           <td><button type="button" class="btn btn--plain btn--small" data-open="${o.id}"><strong>${esc(o.order_number)}</strong></button></td>
+          <td class="nowrap" data-tracking>${o.tracking_number != null ? `<strong>#${o.tracking_number}</strong>` : '<span class="muted">&mdash;</span>'}</td>
           <td class="nowrap">${esc(fmtDateTime(o.submitted_at))}</td><td>${esc(o.customer_number === 'WALK-IN' ? 'Walk-in' : o.customer_number)}</td>
           <td class="num">${o.line_count}</td><td class="num">${formatPeso(o.total_centavos)}</td><td data-order-status>${orderStatusBadges(o)}</td><td>${esc(o.cashier_name)}</td></tr>`).join('')}</tbody>
       </table></div>`;
@@ -203,6 +216,7 @@ export async function openDetail(id) {
       <dl class="kv">
         <dt>Date and time</dt><dd>${esc(fmtDateTime(order.submitted_at))}</dd>
         <dt>Customer</dt><dd>${esc(order.customer_number === 'WALK-IN' ? 'Walk-in' : order.customer_number)}</dd>
+        ${order.tracking_number != null ? `<dt>Tracking No.</dt><dd data-tracking-detail><strong class="detail-tracking">#${order.tracking_number}</strong></dd>` : ''}
         <dt>Cashier</dt><dd>${esc(order.cashier_name)}</dd>
         ${COUNTS_AS_SALE.includes(order.status) ? `<dt>Pickup status</dt><dd data-pickup-status>${esc(FULFILLMENT_LABELS[order.fulfillment_status] ?? '')}</dd>` : ''}
         ${order.refund_centavos ? `<dt>Refunded</dt><dd>${formatPeso(order.refund_centavos)}</dd>` : ''}
@@ -268,8 +282,10 @@ async function startChange(order) {
     ...(i.sold_by === 'PER_KG' ? { pieces: String(i.pieces ?? 1) } : {}),
   }));
   // Revision 12: Katay / Dead chicken from the ref keep their heads, kilos and the price per kg that was typed.
+  // Revision 13: and the chicken they came from (an order sold before Revision 13 has none: the cashier picks it again).
   draft.refItems = (order.ref_items ?? []).map((i) => ({
-    key: uuid(), kind: i.kind, name: i.product_name, heads: String(i.heads), weight: formatThousandths(i.weight_g),
+    key: uuid(), kind: i.kind, name: i.product_name, productId: i.product_id ?? null, productName: i.product_id ? findProduct(i.product_id)?.name ?? i.product_name.split(' - ').slice(1).join(' - ') : '',
+    heads: String(i.heads), weight: formatThousandths(i.weight_g),
     price: `${Math.floor(i.price_per_kg_centavos / 100)}.${String(i.price_per_kg_centavos % 100).padStart(2, '0')}`,
   }));
   const dsc = order.discount;
@@ -278,9 +294,10 @@ async function startChange(order) {
     draft.discount = { type: dsc.type, value, reason: dsc.reason_code, note: dsc.note ?? '' };
   }
   draft.customerNumber = order.customer_number === 'WALK-IN' ? '' : order.customer_number;
+  draft.trackingNumber = order.tracking_number != null ? String(order.tracking_number) : '';   // the replacement keeps the same tag unless the cashier picks another
   // What this order holds in stock right now: it is replaced by the new order, so its own stock counts as free for the replacement.
   const held = { chicken: {}, other: {}, ref: {} };
-  for (const i of order.ref_items ?? []) held.ref[i.kind] = (held.ref[i.kind] ?? 0) + i.heads;
+  for (const i of order.ref_items ?? []) held.ref[`${i.kind}:${i.product_id ?? null}`] = (held.ref[`${i.kind}:${i.product_id ?? null}`] ?? 0) + i.heads;
   for (const i of order.items) held.chicken[i.product_id] = (held.chicken[i.product_id] ?? 0) + i.heads;
   for (const i of order.other_items) {
     // the stock row it was counted on: a by-the-kilo line with pieces counted on the product's piece row

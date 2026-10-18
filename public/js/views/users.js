@@ -1,14 +1,18 @@
 // Users (admin only): add staff, change roles, reset passwords, deactivate, delete.
 import { api } from '../api.js';
-import { $, esc, toast, errorBox, openDialog } from '../util.js';
+import { $, esc, howItWorks, toast, errorBox, openDialog } from '../util.js';
 
-const ROLE_TEXT = { cashier: 'Cashier', manager: 'Manager', admin: 'Admin' };
+const ROLE_TEXT = { cashier: 'Cashier', assistant: 'Assistant Cashier', manager: 'Manager', admin: 'Admin', display: 'Butcher TV (screen only)' };
 // Why an account has no Delete Account button. The server sends the full sentence; this is the short label shown in the row.
 const PROTECTED_TEXT = { SELF_DELETE: 'This is you', PROTECTED: 'Main owner account', LAST_ADMIN: 'Last active admin' };
 
 export async function mountUsers(root) {
   root.innerHTML = `<div class="panel"><div class="panel-head"><h1>Users</h1><button type="button" class="btn btn--primary" id="addUser">Add user</button></div>
-    <p class="muted">Cashiers take and cancel orders. Managers also refund, export and manage products. Admins also set chicken prices, service fees and users.</p>
+    <p class="muted">Add the people who use the app and pick what each may do.</p>
+    ${howItWorks(`<ul><li><strong>Assistant Cashier</strong>: only the Order List (moves orders, no prices) and the Butcher view.</li>
+      <li><strong>Cashier</strong>: takes and cancels orders.</li><li><strong>Manager</strong>: also refunds, exports and manages products.</li>
+      <li><strong>Admin</strong>: also sets chicken prices, service fees and users.</li>
+      <li><strong>Butcher TV</strong>: can only open the Butcher screen; use it on the TV in the butcher area.</li></ul>`, 'What each role can do')}
     <div id="userList" class="mt-s"></div></div>`;
   $('#addUser').onclick = () => userDialog(null);
   let users = [];
@@ -71,10 +75,10 @@ export async function mountUsers(root) {
     const done = await openDialog({
       title: 'Delete this user account?',
       body: `<div id="delErr"></div>
-        <p>Are you sure you want to delete this account? This action may permanently remove the user's access and associated account data. Please confirm that you want to continue.</p>
+        <p>Delete this account? The person can no longer sign in.</p>
         <div class="del-who"><strong>${esc(user.display_name)}</strong>
           <span class="muted">Username: ${esc(user.username)} &middot; ${esc(ROLE_TEXT[user.role])} &middot; ${user.active ? 'Active' : 'Inactive'}</span></div>
-        <p class="muted">Past orders, payments and the audit history are never deleted. They keep this person's name.</p>`,
+        <p class="muted">Past orders keep this person's name.</p>`,
       actions: [
         { label: 'Cancel', value: false },
         {

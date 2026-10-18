@@ -69,9 +69,14 @@ async function makeShop() {
     },
     order: (who, items = [], other = [], extra = {}) => who.call('POST', '/api/orders', { submission_key: key(), items, other_items: other, ...extra }),
     // Revision 11: a day is closed in two steps, "Submit Inventory Today" and then "Closed Inventory Today and Reset the Day".
+    // Revision 13: a day left open past midnight closes by itself, so a hand close is made on the day's own evening (22:00 PH time).
     closeDay: async (date, who = manager) => {
-      await who.call('POST', '/api/inventory/submit', { business_date: date });
-      return who.call('POST', '/api/inventory/close-day', { business_date: date });
+      const now = clock.now;
+      if (now.toISOString().slice(0, 10) > date) clock.now = new Date(`${date}T14:00:00Z`);
+      try {
+        await who.call('POST', '/api/inventory/submit', { business_date: date });
+        return await who.call('POST', '/api/inventory/close-day', { business_date: date });
+      } finally { clock.now = now; }
     },
     board: async (who = cashier) => (await who.call('GET', '/api/board')).data,
     move: (who, id, status) => who.call('POST', `/api/orders/${id}/fulfillment`, { status }),
@@ -106,9 +111,9 @@ async function secondDay(shop) {
   assert.equal((await shop.order(shop.cashier, [live(shop.whole, 23)])).status, 201);
   const open = await shop.cashier.call('GET', '/api/orders');
   for (const o of open.data.orders) await shop.move(shop.manager, o.id, 'COMPLETE');
-  shop.clock.now = new Date('2026-10-13T01:00:00Z');
-  const closed = await shop.closeDay('2026-10-12');
+  const closed = await shop.closeDay('2026-10-12');                      // Revision 13: closed by hand the same evening
   assert.equal(closed.status, 200, JSON.stringify(closed.data));
+  shop.clock.now = new Date('2026-10-13T01:00:00Z');
   return closed.data;
 }
 
@@ -412,15 +417,16 @@ test('Change 4 (as of Revision 11): the inventory files list every Beginning Bal
     const submitted = await shop.manager.call('POST', '/api/inventory/submit', { business_date: '2026-10-13' });
     assert.equal(submitted.status, 201, JSON.stringify(submitted.data));
     const file = readZip((await shop.manager.call('GET', `/api/inventory/submissions/${submitted.data.submission.id}/file`)).data);
-    assert.ok(file['xl/worksheets/sheet2.xml'].includes('Counted again'), 'the submitted file has the corrections');
+    // Revision 13: the corrections are notes under the tables of the one sheet (no separate sheet any more)
+    assert.ok(file['xl/worksheets/sheet1.xml'].includes('Counted again'), 'the submitted file has the corrections');
+    assert.deepEqual(sheetNames(file), ['Inventory Today']);
     // Revision 12: once the day is closed (submitted and closed in one step), its Export file lists them too, and exporting changes nothing.
-    shop.clock.now = new Date('2026-10-14T01:00:00Z');
     const closed = await shop.manager.call('POST', '/api/inventory/close-day', { business_date: '2026-10-13', submit: true });
     assert.equal(closed.status, 200, JSON.stringify(closed.data));
     const before = snapshot();
     const exported = readZip((await shop.manager.call('GET', '/api/inventory/day.xlsx?date=2026-10-13')).data);
     assert.equal(snapshot(), before, 'exporting a closed day changes no stock, order, day or history row');
-    const edits = exported[`xl/worksheets/sheet${sheetNames(exported).indexOf('Beginning Balance Edits') + 1}.xml`];
+    const edits = exported['xl/worksheets/sheet1.xml'];
     assert.ok(edits.includes('Incorrect inventory') && edits.includes('Counted again') && edits.includes('Whole Chicken'), 'the corrections sheet lists the reason');
   } finally { shop.close(); }
 });
@@ -486,12 +492,12 @@ test('upgrade 7 -> 8: every order, payment, stock figure and price is kept exact
   const { dir, file } = makeVersion7Database();
   const seed = new DatabaseSync(file);
   const tables = ['users', 'products', 'service_fees', 'order_items', 'order_other_items', 'orders', 'payments', 'order_events', 'business_days', 'inventory_records', 'inventory_events', 'price_history', 'other_product_options'];
-  const dump = (d) => JSON.stringify(Object.fromEntries(tables.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()])));
+  const dump = (d) => JSON.stringify(Object.fromEntries(tables.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ tracking_number: _t, ...row }) => row)])));   // orders.tracking_number is new in version 12 (empty for old orders)
   const before = dump(seed);
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 10);   // 7 -> 8 -> 9 (Revision 11) in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);   // 7 -> 8 -> 9 (Revision 11) in one start
   // inventory_events gained two columns (empty for old rows); other_product_options is compared apart because new rows were added.
   // Version 9 added products.category and inventory_records.katay_milli; every other value is unchanged.
   const after = JSON.parse(dump(db));
@@ -555,7 +561,7 @@ test('upgrade 7 -> 8: if a step fails, nothing is half-changed - the file stays 
   check.close();
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v8-.*\.bak$/.test(f)), 'the safety copy was made before the first step');
   const fixed = openDb(file);                                          // the next start completes the upgrade
-  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 10);
+  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 13);
   assert.equal(fixed.prepare('SELECT COUNT(*) AS n FROM order_items').get().n, 4);
   fixed.close();
 });

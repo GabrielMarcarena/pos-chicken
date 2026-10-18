@@ -14,7 +14,8 @@ import { loadConfig } from '../src/config.js';
 import { authenticate, createSession, createUser } from '../src/services/users.js';
 import { createOtherProduct, createProduct, listPriceHistory, updateFee, updateProduct } from '../src/services/catalog.js';
 import { cancelOrder, createOrder, moveOrder } from '../src/services/orders.js';
-import { clearRecords, countKept, countRecords } from '../src/clearRecords.js';
+import { clearRecords, countKept, countRecords, countSessions } from '../src/clearRecords.js';
+import { saveCashOnHand } from '../src/services/cashbook.js';
 import { getInventory, updateRecord, startNewDay } from '../src/services/inventory.js';
 import { submitInventory } from '../src/services/inventoryReport.js';
 
@@ -257,4 +258,44 @@ test('command: --keep-price-history keeps the price history', async () => {
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 0);
   assert.deepEqual(db.prepare('SELECT * FROM price_history ORDER BY id').all(), history);
   db.close();
+});
+
+// ---- Revision 17: cash on hand, and the full reset for going live ------------------------------------------
+
+test('revision 17: cash on hand of a closed day is cleared with it (the clear used to fail on it)', () => {
+  const shop = makeShop();
+  saveCashOnHand(shop.db, shop.manager, { amount: '1500' }, NOW);
+  moveOrder(shop.db, shop.cashier, shop.orders[1].id, 'COMPLETE', { now: NOW });
+  const opts = { dir: path.join(shop.dir, 'inventory') };
+  submitInventory(shop.db, shop.manager, { business_date: '2026-10-12' }, NOW, opts);
+  startNewDay(shop.db, shop.manager, { business_date: '2026-10-12' }, NOW, opts);
+  assert.ok(rows(shop.db, 'SELECT * FROM cash_on_hand').length >= 1);
+  clearRecords(shop.db);
+  assert.equal(rows(shop.db, 'SELECT COUNT(*) AS n FROM cash_on_hand')[0].n, 0, 'the closed day cash on hand is gone');
+  assert.deepEqual(rows(shop.db, 'PRAGMA foreign_key_check'), []);
+  shop.db.close();
+});
+
+test('revision 17: --everything also deletes the open day and every sign-in, keeps the setup, and the app opens a fresh day', () => {
+  const shop = makeShop();
+  saveCashOnHand(shop.db, shop.manager, { amount: '1500' }, NOW);
+  const kept = { ...setup(shop.db), sessions: [] };
+  const protections = triggers(shop.db);
+  assert.ok(countSessions(shop.db) >= 1);
+  assert.equal(rows(shop.db, "SELECT COUNT(*) AS n FROM business_days WHERE status = 'OPEN'")[0].n, 1);
+  clearRecords(shop.db, { everything: true });
+  for (const t of ['business_days', 'inventory_records', 'inventory_events', 'inventory_submissions', 'inventory_saves', 'cash_counts', 'cash_on_hand', 'expenses', 'ref_stock_entries', 'orders', 'payments', 'sessions', 'price_history']) {
+    assert.equal(rows(shop.db, `SELECT COUNT(*) AS n FROM ${t}`)[0].n, 0, `${t} is empty`);
+  }
+  assert.deepEqual(setup(shop.db), kept, 'users, products, prices and fees are untouched');
+  assert.deepEqual(triggers(shop.db), protections);
+  assert.deepEqual(rows(shop.db, 'PRAGMA foreign_key_check'), []);
+  assert.ok(authenticate(shop.db, 'gabriel', 'gabriel-pass-1'));
+  // a fresh day opens by itself, with a stock row for every product, all zero
+  const inv = getInventory(shop.db, shop.manager, {}, NOW);
+  assert.equal(inv.day.status, 'OPEN');
+  assert.ok(inv.chicken.length >= 1 && [...inv.chicken, ...inv.other].every((r) => r.beginning === 0 || r.beginning === '0' || !r.beginning));
+  stockUp(shop.db, shop.manager);
+  assert.equal(shop.order(20).id, 1);
+  shop.db.close();
 });

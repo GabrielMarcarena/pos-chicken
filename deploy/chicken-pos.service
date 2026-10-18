@@ -1,0 +1,22 @@
+# Starts Chicken POS when the server boots and restarts it if it ever stops.
+# Install:  sudo cp deploy/chicken-pos.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now chicken-pos
+[Unit]
+Description=Chicken POS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/pos-chicken
+EnvironmentFile=/home/ubuntu/pos-chicken/.env
+# The business day changes at midnight in the Philippines.
+Environment=TZ=Asia/Manila
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server.js
+Restart=always
+RestartSec=3
+# A stop sends SIGTERM, which closes the database cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

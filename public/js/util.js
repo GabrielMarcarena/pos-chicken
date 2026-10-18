@@ -69,7 +69,19 @@ export function openDialog({ title, body, actions = [], onOpen }) {
       } finally { btn.disabled = false; }
       return undefined;
     };
+    // Revision 13 (keyboard): Enter in a box presses the main button; a question with a main (not a danger) button starts on it, so Enter
+    // confirms. A danger question (cancel an order ...) starts on the first button, so a stray Enter never does the dangerous thing.
+    const mainIndex = actions.findIndex((a) => a.kind === 'primary');
+    dlg.onkeydown = (e) => {
+      if (e.key !== 'Enter' || e.isComposing || mainIndex < 0) return;
+      const t = e.target;
+      if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.tagName === 'SELECT') return;
+      const btn = dlg.querySelector(`[data-dlg-action="${mainIndex}"]`);
+      if (btn && !btn.disabled) { e.preventDefault(); btn.click(); }
+    };
     dlg.showModal();
+    const start = mainIndex >= 0 ? dlg.querySelector(`[data-dlg-action="${mainIndex}"]`) : dlg.querySelector('[data-dlg-action="0"]');
+    (dlg.querySelector('.dlg-body input:not([type="hidden"]), .dlg-body select, .dlg-body textarea') ?? start)?.focus();
     onOpen?.(dlg);
   });
 }
@@ -145,3 +157,11 @@ export function otherQtyText(line) {
   return line.pieces ? `${line.pieces} pc${line.pieces === 1 ? '' : 's'} · ${kg}` : kg;
 }
 const formatThousandthsLocal = (n) => { let s = (n / 1000).toFixed(3).replace(/0+$/, ''); if (s.endsWith('.')) s += '0'; return s; };
+
+/**
+ * A short explanation folded away. Each page keeps one short line; the full explanation opens with "How it works" when someone wants it
+ * (Revision 16). html is trusted markup written in this app, never text typed by a person.
+ */
+export function howItWorks(html, title = 'How it works') {
+  return `<details class="how"><summary>${title}</summary><div class="how-body">${html}</div></details>`;
+}

@@ -7,9 +7,12 @@
 //                            byte before it is recorded.
 //   Closed Inventory Today and Reset the Day
 //                            (Revision 12) ONE step: today's inventory is submitted (the same file as above, saved and recorded) and the
-//                            day is closed, in a single transaction. Either both happen or neither does.
+//                            day is closed, in a single transaction. Either both happen or neither does. Revision 13: no longer on the
+//                            screen (the day closes by itself at midnight, see midnightClose below); the server route stays.
 //   Export (closed day)      (Revision 12, in place of Export Inventory History) the inventory of one CLOSED business day, in the same
 //                            layout as the submitted file: chicken products, then other products. Read-only.
+//
+// Revision 13: Beginning Balance edits are notes under the tables (who, when, reason, note), only when there was an edit.
 //
 // All of them read the saved records (the database is the source of truth). None changes stock or orders.
 import fs from 'node:fs';
@@ -18,14 +21,22 @@ import { tx } from '../db.js';
 import { HttpError } from '../http.js';
 import {
   openDay, prepareOpenDay, inventoryRows, dayFingerprint, insertSubmission, canEditInventory, beginningEdits, sha256, submissionFileOk,
-  dayToClose, closeOpenDay, shapeDay,
+  dayToClose, closeOpenDay, shapeDay, autoCloseIfDue,
 } from './inventory.js';
 import { toPhtDateTime } from '../time.js';
 import { Sheet, buildWorkbook, header, formula, date as dateCell } from '../xlsx.js';
 
 const qty = (milli) => milli / 1000;
-export const EDIT_COLUMNS = ['Product', 'Old Beginning Balance', 'New Beginning Balance', 'Reason', 'Note', 'Changed by', 'Changed (PH time)'];
-const editRow = (e) => [e.name, qty(e.was), qty(e.now), e.reason, e.note, e.by, toPhtDateTime(e.at)];
+/**
+ * Revision 13: a Beginning Balance edit as one note line under the tables, e.g.
+ * "Note: B-Cull Beginning Balance changed from 10 to 12 by Gabriel on 2026-10-16 3:15 PM. Reason: Recount (stock check). Note: counted again."
+ */
+export function editNote(e) {
+  const at = toPhtDateTime(e.at);
+  const [h, m] = at.slice(11, 16).split(':').map(Number);
+  const time = `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+  return `Note: ${e.name} Beginning Balance changed from ${qty(e.was)} to ${qty(e.now)} by ${e.by} on ${at.slice(0, 10)} ${time}. Reason: ${e.reason}.${e.note ? ` Note: ${e.note}` : ''}`;
+}
 
 // ---- The inventory file (submitted, or exported for a closed day) -------------------------------------------------
 
@@ -76,19 +87,19 @@ export function buildInventoryXlsx(data) {
   const noteRow = sheet.rows.length + 1;
   sheet.addRow([bold(`Note: ${ZERO_NOTE}`)]);
   sheet.addRow([{ v: 'Total = Beginning Balance + Additional. Left = Total - Sold. Chicken: New Total = Left - Reject - Katay - Dead - Pull Out. Other products: New Total = Left. Reject, Katay, Dead and Pull Out are inventory losses, not sales and not discounts.', s: 'wrap' }]);
+  // Revision 13: who edited a Beginning Balance, why, and their note. Only when there was an edit; otherwise nothing is added.
+  const editRows = [];
+  if (data.edits.length) {
+    sheet.addRow([]);
+    sheet.addRow([bold('BEGINNING BALANCE EDITS')]);
+    for (const e of data.edits) { editRows.push(sheet.rows.length + 1); sheet.addRow([editNote(e)]); }
+  }
   // Revision 12: every column wide enough for its heading and its numbers. The title and the two notes are left out of the measuring:
   // they are long single lines that may run across the empty cells beside them.
-  sheet.fitColumns({ skipRows: [1, noteRow, noteRow + 1], min: 9, max: 42 });
+  sheet.fitColumns({ skipRows: [1, noteRow, noteRow + 1, ...editRows], min: 9, max: 42 });
   sheet.merges.push(`A${noteRow + 1}:K${noteRow + 1}`);
   sheet.heights[noteRow + 1] = 30;
-
-  const edits = new Sheet('Beginning Balance Edits');
-  edits.freezeHeader = true;
-  edits.addRow(EDIT_COLUMNS.map(header));
-  if (!data.edits.length) edits.addRow(['None']);
-  for (const e of data.edits) edits.addRow(editRow(e));
-  edits.fitColumns({ max: 50 });
-  return buildWorkbook([sheet, edits]);
+  return buildWorkbook([sheet]);
 }
 
 /** Kept under its Revision 11 name: the submitted file. */
@@ -220,9 +231,35 @@ export function closedDayExport(db, viewer, date, now = new Date()) {
   const rows = inventoryRows(db, day);
   const body = buildInventoryXlsx({
     title: 'Chicken POS - Closed Inventory', sheetName: 'Closed Inventory', business_date: day.business_date,
-    info: [['Status', 'Closed'], ['Closed (PH time)', toPhtDateTime(day.closed_at)], ['Closed by', shaped.closed_by_name ?? ''],
+    info: [['Status', 'Closed'], ['Closed (PH time)', toPhtDateTime(day.closed_at)], ['Closed by', shaped.closed_by_name ?? 'The app, automatically at midnight'],
       ['Exported (PH time)', toPhtDateTime(now.toISOString())], ['Exported by', `${viewer.display_name} (${viewer.role})`]],
     chicken: rows.chicken.filter((r) => !allZero(r)), other: rows.other.filter((r) => !allZero(r)), edits: beginningEdits(db, day.id),
   });
   return { name: `inventory_closed_${day.business_date}.xlsx`, body };
+}
+
+// ---- The midnight close (Revision 13) -----------------------------------------------------------------------------
+
+/**
+ * Close the open day if midnight has passed, then make sure every day closed at midnight has its inventory file in the inventory folder
+ * (inventory_<date>_closed-at-midnight.xlsx, the closed-day layout). The server runs this every minute and at start. The closing is in
+ * the database first; the file is a copy, so if it cannot be written now it is tried again the next minute. Returns the closed date or null.
+ */
+export function midnightClose(db, now = new Date(), { dir }) {
+  const closed = autoCloseIfDue(db, now);
+  const days = db.prepare(`SELECT d.business_date FROM business_days d JOIN inventory_saves s ON s.business_day_id = d.id
+                           WHERE d.status = 'CLOSED' AND s.how = 'AUTO_CLOSE' ORDER BY d.business_date DESC LIMIT 7`).all();
+  for (const { business_date: date } of days) {
+    const full = path.join(dir, `inventory_${date}_closed-at-midnight.xlsx`);
+    if (fs.existsSync(full)) continue;
+    try {
+      const file = closedDayExport(db, { display_name: 'The app', role: 'automatic' }, date, now);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(`${full}.part`, file.body);
+      fs.renameSync(`${full}.part`, full);
+    } catch (err) {
+      console.error(`Could not save the inventory file of ${date}: ${err.message}. It will be tried again in a minute.`);
+    }
+  }
+  return closed;
 }

@@ -623,12 +623,11 @@ test('Change 6: confirming closes the day, carries New Total into the next Begin
     const ordersBefore = shop.db.prepare('SELECT * FROM orders ORDER BY id').all();
     const productsBefore = JSON.stringify(shop.db.prepare('SELECT * FROM products ORDER BY id').all());
 
-    shop.clock.now = new Date('2026-10-13T01:00:00Z');                      // the next morning, 09:00
-    const stale = (await shop.inventory()).day;
-    assert.deepEqual([stale.business_date, stale.stale], ['2026-10-12', true], 'the screen says the open day is yesterday\'s');
+    // Revision 13: closed by hand the same evening (the screen no longer has the button; the day closes by itself at midnight).
     const r = await closeDay(shop, '2026-10-12');
     assert.equal(r.status, 200, JSON.stringify(r.data));
     assert.deepEqual([r.data.closed.business_date, r.data.closed.status, r.data.opened.business_date, r.data.opened.status], ['2026-10-12', 'CLOSED', '2026-10-13', 'OPEN']);
+    shop.clock.now = new Date('2026-10-13T01:00:00Z');                      // the next morning, 09:00
     assert.equal(r.data.standby_orders, 2, 'two Standby orders carry over (the third order is Complete)');
 
     const now = await shop.inventory();
@@ -709,7 +708,6 @@ test('Change 6: if the reset fails half way, nothing is changed (all or nothing)
     const before = snapshot();
     // Make the last step fail: opening the next day is refused by a trigger. By then the old day's Sold figures have been frozen and the day marked closed.
     shop.db.exec("CREATE TRIGGER zz_test_fail BEFORE INSERT ON business_days WHEN NEW.business_date = '2026-10-13' BEGIN SELECT RAISE(ABORT, 'test: cannot open the next day'); END");
-    shop.clock.now = new Date('2026-10-13T01:00:00Z');
     const r = await closeDay(shop, '2026-10-12');
     assert.equal(r.status, 500);
     assert.match(r.data.error, /Nothing was changed/);
@@ -751,11 +749,13 @@ test('Change 6: the day label is today\'s date, or the next date when the day be
     // closing in the middle of the same calendar date: the next business day is the next date, so dates never repeat
     const same = await closeDay(shop, '2026-10-12');
     assert.equal(same.data.opened.business_date, '2026-10-13');
-    // two days later the shop starts a new day: the label is that day's own date
+    // Revision 13: two days later the day 2026-10-13 has closed by itself at midnight, and the new day has that day's own date
     shop.clock.now = new Date('2026-10-15T01:00:00Z');
-    assert.equal((await shop.inventory()).day.stale, true);
-    const late = await closeDay(shop, '2026-10-13');
-    assert.equal(late.data.opened.business_date, '2026-10-15');
+    const now = await shop.inventory();
+    assert.deepEqual([now.day.business_date, now.day.stale], ['2026-10-15', false]);
+    const auto = shop.db.prepare("SELECT status, closed_by FROM business_days WHERE business_date = '2026-10-13'").get();
+    assert.deepEqual([auto.status, auto.closed_by], ['CLOSED', null], 'closed by the app, not by a person');
+    assert.equal(shop.db.prepare("SELECT COUNT(*) AS n FROM business_days WHERE business_date = '2026-10-14'").get().n, 0, 'no empty day is made for the date nobody worked');
     // order numbers still follow the calendar date and keep counting
     const o = await shop.order(shop.cashier, [chicken(shop.whole, 1)]);
     assert.match(o.data.order.order_number, /^ORD-20261015-001$/);
