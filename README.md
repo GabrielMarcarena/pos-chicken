@@ -95,7 +95,7 @@ Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords an
 4. A **refunded** order that is still Ongoing or Standby keeps its number and still shows on the Butcher screen, the same as on the Order List.
 5. The Butcher screen has **no Done button**; it only animates when an order changes. Orders move on the Order List as before. *(You confirmed this.)*
 
-**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 15 checks passed.
+**Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 12 checks passed.
 **Known problem, not caused by this revision:** the old browser test `npm run test:e2e` is out of date. 43 of its 67 checks already fail on revision 13 (for example it looks for the Close button that revision 13 removed). It needs updating before it is useful again.
 
 ## Earlier: revision 14
