@@ -15,7 +15,7 @@
 // Revision 11: the report date is the BUSINESS DAY the orders were sold on (the same day the Daily Inventory counts them on), and a
 // chicken product goes into the block chosen as its category on the Products screen (B-Cull, Cull, Broiler, or a block of its own).
 import { COUNTS_AS_SALE, CASH_DENOMINATIONS, discountReasonLabel, eggSizeOf, EGG_SIZES } from '../../shared/constants.js';
-import { expensesOf, latestCashCount, cashSales } from './cashbook.js';
+import { expensesOf, latestCashCount, latestCashOnHand, cashSales } from './cashbook.js';
 import { toPhtDateTime } from '../time.js';
 import { Sheet, buildWorkbook, style, colName } from '../xlsx.js';
 
@@ -94,9 +94,10 @@ export function gatherDaily(db, { date, cashierId = null }) {
   const expenses = day ? expensesOf(db, day.id, { cashierId, includeRemoved: false }).map((e) => ({ item: e.item, amount: e.amount_centavos })) : [];
   const cashCount = day ? latestCashCount(db, day.id, cashierId) : null;
   const money = day ? cashSales(db, day.id, cashierId) : { cash: 0, non_cash: 0 };
+  const cashOnHand = day ? latestCashOnHand(db, day.id)?.amount_centavos ?? 0 : 0;   // Revision 16: the starting cash of the day
   return {
     date, cashierLabel, orderCount: orders.length,
-    expenses, expensesTotal: expenses.reduce((sum, e) => sum + e.amount, 0), cashCount, nonCash: money.non_cash,
+    expenses, expensesTotal: expenses.reduce((sum, e) => sum + e.amount, 0), cashCount, nonCash: money.non_cash, cashOnHand,
     timeLabel: times.length ? `${fmt12(times[0])} - ${fmt12(times[times.length - 1])}` : '',
     chicken, other, discounts,
     discount: orders.reduce((s, o) => s + o.discount_centavos, 0),
@@ -239,7 +240,7 @@ export function buildDailyXlsx(data) {
   const collLines = N + 2;                                 // one per block, then EGGS and OTHERS
   const othersNeeded = Math.max(5, m.otherRows.length);
   const othersRowsAt = (bottom) => {                       // OTHERS rows that fit above COLLECTIONS and the cash block ending at `bottom`
-    const cashTitle = bottom - (D + 5);
+    const cashTitle = bottom - (D + 6);
     const collTitle = cashTitle - 2 - (collLines + 5);
     return collTitle - 2 - 5;
   };
@@ -417,7 +418,7 @@ export function buildDailyXlsx(data) {
 
   // ---- Cash breakdown (every bill and coin, from the count saved in New order > Advanced). EXCESS/LOSS is on the last row. ----
   // PIECES is how many of each; AMOUNT = pieces x the bill or coin (a formula, so a number typed in by hand adds up too).
-  const cash = bottom - (D + 5);
+  const cash = bottom - (D + 6);
   const counts = data.cashCount?.counts ?? null;
   g.box(cash, othC, cash, othC + 2, data.cashCount ? `CASH BREAKDOWN (counted by ${data.cashCount.by} at ${toPhtDateTime(data.cashCount.counted_at).slice(11)})` : 'CASH BREAKDOWN', S.section);
   ['BILLS AND COINS', 'PIECES', 'AMOUNT'].forEach((h, i) => g.put(cash + 1, othC + i, h, S.head));
@@ -437,10 +438,15 @@ export function buildDailyXlsx(data) {
   const nonCashRow = totalRow0 + 1;
   g.box(nonCashRow, othC, nonCashRow, othC + 1, 'LESS NON-CASH PAYMENTS', S.label);
   g.put(nonCashRow, othC + 2, pesoNum(data.nonCash ?? 0), S.peso);
-  const expectedRow = nonCashRow + 1;
-  const expected = round2(net - pesoNum(data.nonCash ?? 0));
+  // Revision 16: the starting cash (panukli) is in the drawer too, so it is added to what the drawer should hold.
+  const onHandRow = nonCashRow + 1;
+  const onHand = pesoNum(data.cashOnHand ?? 0);
+  g.box(onHandRow, othC, onHandRow, othC + 1, 'PLUS CASH ON HAND', S.label);
+  g.put(onHandRow, othC + 2, onHand, S.peso);
+  const expectedRow = onHandRow + 1;
+  const expected = round2(net - pesoNum(data.nonCash ?? 0) + onHand);
   g.box(expectedRow, othC, expectedRow, othC + 1, 'EXPECTED CASH', S.label);
-  g.put(expectedRow, othC + 2, expected, S.peso, { f: `${ref(netRow, othC + 2)}-${ref(nonCashRow, othC + 2)}` });
+  g.put(expectedRow, othC + 2, expected, S.peso, { f: `${ref(netRow, othC + 2)}-${ref(nonCashRow, othC + 2)}+${ref(onHandRow, othC + 2)}` });
   const excessRow = expectedRow + 1;   // === bottom
   g.box(excessRow, othC, excessRow, othC + 1, 'EXCESS/LOSS', S.grand);
   g.put(excessRow, othC + 2, counts ? round2(overall - expected) : '', S.totalPeso,
@@ -466,7 +472,7 @@ export function buildDailyXlsx(data) {
     ['The page is the paper form: one block per chicken type side by side, then EGGS, DISCOUNTS and EXPENSES in one column, and OTHERS, COLLECTIONS and the CASH BREAKDOWN in the next. Every column ends on the same last row.', 'note'],
     ['Left empty on purpose, for the cashier to write or type in: Chicken Balance, Additional, TOTAL and LEFT for each chicken type; egg BEG and LEFT. The totals update by themselves when you type numbers in.', 'note'],
     ['EXPENSES are the ones typed in New order > Advanced > Expenses for this business day (the empty rows below them can still be written in). LESS EXPENSES takes their total off.', 'note'],
-    ['CASH BREAKDOWN is the latest count saved in New order > Advanced > Cash breakdown: PIECES of each bill and coin, AMOUNT = pieces x value. OVERALL TOTAL adds them up. EXPECTED CASH = NET SALES - LESS NON-CASH PAYMENTS (GCash, Maya, bank and other payments are not in the drawer). EXCESS/LOSS = OVERALL TOTAL - EXPECTED CASH: above zero is extra cash, below zero is missing cash. It stays empty until the cash is counted.', 'note'],
+    ['CASH BREAKDOWN is the latest count saved in New order > Advanced > Cash breakdown: PIECES of each bill and coin, AMOUNT = pieces x value. OVERALL TOTAL adds them up. EXPECTED CASH = NET SALES - LESS NON-CASH PAYMENTS (GCash, Maya, bank and other payments are not in the drawer) + PLUS CASH ON HAND (the starting cash typed in New order > Advanced > Cash breakdown). EXCESS/LOSS = OVERALL TOTAL - EXPECTED CASH: above zero is extra cash, below zero is missing cash. It stays empty until the cash is counted.', 'note'],
     ['Katay and Dead chicken sold from the ref are listed inside the block of the chicken they came from (under a "B-CULL: KATAY (from the ref)" line), at the price per kg the cashier typed, with no service fee. At the bottom of each block LIVE, KATAY and DEAD have their own heads, kilos and amount; their heads and kilos are never added together, and SOLD (live) counts live chicken only. TOTAL AMOUNT adds the money of the three, and that is what goes into COLLECTIONS and GROSS SALES. A sale made before the chicken was recorded is listed under KATAY / DEAD (source not recorded).', 'note'],
     ['DISCOUNTS lists every discounted order of the day (customer, reason, discount); TOTAL DISCOUNTS adds them up and is what LESS DISCOUNTS takes off.', 'note'],
     ['', 'note'],

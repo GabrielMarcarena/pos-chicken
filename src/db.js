@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin','display')),   -- display (Revision 15): the butcher TV account
+  role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin','display','assistant')),   -- display (Revision 15): the butcher TV account; assistant (Revision 16): Order List only
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
   created_at TEXT NOT NULL,
   -- Set when an admin deletes an account that already appears in orders, payments or the audit trail. The row stays so
@@ -456,6 +456,24 @@ CREATE TRIGGER IF NOT EXISTS cash_counts_open_day_only BEFORE INSERT ON cash_cou
 WHEN (SELECT status FROM business_days WHERE id = NEW.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'cash can only be counted on the open business day'); END;
 
+-- Cash on hand (Revision 16): the starting cash (panukli) put in the drawer for a business day. Saving again adds a row; the latest one
+-- counts. Expected cash = cash on hand + cash sales - expenses.
+CREATE TABLE IF NOT EXISTS cash_on_hand (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  business_day_id INTEGER NOT NULL REFERENCES business_days(id),
+  amount_centavos INTEGER NOT NULL CHECK (amount_centavos >= 0),
+  set_by INTEGER NOT NULL REFERENCES users(id),
+  set_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cash_on_hand_day ON cash_on_hand(business_day_id);
+CREATE TRIGGER IF NOT EXISTS cash_on_hand_no_update BEFORE UPDATE ON cash_on_hand
+BEGIN SELECT RAISE(ABORT, 'a saved cash on hand cannot be changed; save a new amount'); END;
+CREATE TRIGGER IF NOT EXISTS cash_on_hand_no_delete BEFORE DELETE ON cash_on_hand
+BEGIN SELECT RAISE(ABORT, 'a saved cash on hand cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS cash_on_hand_open_day_only BEFORE INSERT ON cash_on_hand
+WHEN (SELECT status FROM business_days WHERE id = NEW.business_day_id) <> 'OPEN'
+BEGIN SELECT RAISE(ABORT, 'cash on hand can only be set on the open business day'); END;
+
 -- Expenses paid during a business day (Coke 75, Bread 35 ...). A mistake is removed, not deleted: the row stays with who removed it and why.
 CREATE TABLE IF NOT EXISTS expenses (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -507,7 +525,7 @@ WHEN (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be deleted'); END;
 `;
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 /** One safety copy of the file per start, taken just before the first upgrade step runs. */
 function makeBackup(db, file) {
@@ -801,6 +819,32 @@ function migrateTo11(db, backup) {
 }
 
 /**
+ * Rebuild the users table so its role rule allows exactly these roles. SQLite cannot change a CHECK rule in place, so the table is rebuilt
+ * the way the SQLite manual describes: build the new table, copy every row with its id, drop the old one, rename, and keep the id counter.
+ * Call inside upgrade(), with foreign keys switched off (the caller checks them again before the commit). Does nothing when the rule
+ * already allows the last role in the list.
+ */
+function rebuildUsers(db, roles) {
+  const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()?.sql ?? '';
+  if (!usersSql || usersSql.includes(`'${roles.at(-1)}'`)) return;
+  const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'users'").get()?.seq;
+  db.exec(`CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN (${roles.map((r) => `'${r}'`).join(',')})),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  )`);
+  db.exec('INSERT INTO users_new (id, username, display_name, password_hash, role, active, created_at, deleted_at) SELECT id, username, display_name, password_hash, role, active, created_at, deleted_at FROM users');
+  db.exec('DROP TABLE users');
+  db.exec('ALTER TABLE users_new RENAME TO users');
+  if (seq !== undefined) db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(seq);
+}
+
+/**
  * Version 11 -> 12 (Revision 15). Two changes:
  *   * orders gets the tracking_number column (older orders keep it empty). The unique index and the trigger that locks the number are
  *     made by the schema step; the old trigger is dropped here so the new one replaces it.
@@ -818,26 +862,27 @@ function migrateTo12(db, backup) {
         db.exec('ALTER TABLE orders ADD COLUMN tracking_number INTEGER CHECK (tracking_number IS NULL OR (tracking_number BETWEEN 1 AND 100))');
       }
       db.exec('DROP TRIGGER IF EXISTS orders_immutable_fields');
-      const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()?.sql ?? '';
-      if (usersSql && !usersSql.includes("'display'")) {
-        const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'users'").get()?.seq;
-        db.exec(`CREATE TABLE users_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-          display_name TEXT NOT NULL,
-          password_hash TEXT NOT NULL,
-          role TEXT NOT NULL CHECK (role IN ('cashier','manager','admin','display')),
-          active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
-          created_at TEXT NOT NULL,
-          deleted_at TEXT
-        )`);
-        db.exec('INSERT INTO users_new (id, username, display_name, password_hash, role, active, created_at, deleted_at) SELECT id, username, display_name, password_hash, role, active, created_at, deleted_at FROM users');
-        db.exec('DROP TABLE users');
-        db.exec('ALTER TABLE users_new RENAME TO users');
-        if (seq !== undefined) db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(seq);
-      }
+      rebuildUsers(db, ['cashier', 'manager', 'admin', 'display']);
       const broken = db.prepare('PRAGMA foreign_key_check').all();
       if (broken.length) throw new Error(`The upgrade to version 12 would break ${broken.length} link(s) between records, so nothing was changed.`);
+    });
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
+ * Version 12 -> 13 (Revision 16). The users table is rebuilt to allow the Assistant Cashier role (every account, id and link is kept), and
+ * the cash_on_hand table is made by the schema step.
+ */
+function migrateTo13(db, backup) {
+  backup('v13');
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    upgrade(db, 13, () => {
+      rebuildUsers(db, ['cashier', 'manager', 'admin', 'display', 'assistant']);
+      const broken = db.prepare('PRAGMA foreign_key_check').all();
+      if (broken.length) throw new Error(`The upgrade to version 13 would break ${broken.length} link(s) between records, so nothing was changed.`);
     });
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
@@ -868,6 +913,7 @@ export function openDb(file) {
     if (version < 10) migrateTo10(db, backup);
     if (version < 11) migrateTo11(db, backup);
     if (version < 12) migrateTo12(db, backup);
+    if (version < 13) migrateTo13(db, backup);
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

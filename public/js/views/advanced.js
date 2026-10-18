@@ -5,11 +5,11 @@
 // Everything is saved on the server, for the open business day, and goes on the Daily Report. This file only draws and asks.
 import { keyBadge } from '../keys.js';
 import { api } from '../api.js';
-import { $, esc, toast, errorBox, openDialog, formatPeso, formatKg, fmtDateTime, fmtDate, todayPH } from '../util.js';
+import { $, esc, toast, errorBox, openDialog, howItWorks, formatPeso, formatKg, fmtDateTime, fmtDate, todayPH } from '../util.js';
 import { parsePesosToCentavos } from '/shared/money.js';
 import { CASH_DENOMINATIONS, MAX_CASH_PIECES, REF_LABELS, cashCountTotal } from '/shared/constants.js';
 
-const adv = { section: 'ref', data: null, error: null, counts: null, lines: [{ item: '', amount: '' }], busy: false, root: null, hooks: null };
+const adv = { section: 'ref', data: null, error: null, counts: null, onHand: null, lines: [{ item: '', amount: '' }], busy: false, root: null, hooks: null };
 
 export const ADVANCED_SECTIONS = { ref: 'Ref stock (Katay & Dead)', cash: 'Cash breakdown', expenses: 'Expenses' };
 
@@ -22,6 +22,7 @@ export async function renderAdvanced(root, hooks, { reload = true } = {}) {
     try { adv.data = await api('GET', '/api/advanced'); adv.error = null; } catch (err) { adv.error = err; }
     if (!adv.root?.isConnected || adv.root !== root) return;
     adv.counts = null;   // start from the last saved count
+    adv.onHand = null;
   }
   draw();
 }
@@ -138,8 +139,18 @@ function cashHtml() {
   const coins = CASH_DENOMINATIONS.filter((d) => d.type === 'coin');
   const saved = m.cash_count ? `<p class="ok-box" data-cash-saved>Last saved by ${esc(m.cash_count.by)} at ${esc(fmtDateTime(m.cash_count.counted_at))}: <strong>${formatPeso(m.cash_count.total_centavos)}</strong>.</p>`
     : '<p class="muted" data-cash-saved>No cash count saved for today yet.</p>';
+  const hand = m.cash_on_hand;
+  if (adv.onHand === null) adv.onHand = hand ? pesoPlainText(hand.amount_centavos) : '';
   return `<section class="adv-section" aria-label="Cash breakdown">
-      <p class="muted">Count the money in the drawer: type how many of each bill and coin. The amounts and the total add up as you type. Saving again replaces the count (the earlier one stays in the history).</p>
+      <p class="muted">Count the bills and coins in the drawer.</p>
+      ${howItWorks('<p>Type how many of each bill and coin. The amounts and the total add up as you type. Saving again replaces the count (the earlier one stays in the history).</p><p><strong>Cash on hand</strong> is the starting cash you put in the drawer for change (panukli). Type it once a day. The drawer should then hold: cash on hand + cash sales today &minus; expenses.</p>')}
+      <div class="panel cash-hand mt-s">
+        <div class="field"><label for="cashOnHand">Cash on hand <span class="muted">(starting cash, ₱)</span></label>
+          <div class="tracking-row"><input id="cashOnHand" type="text" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(adv.onHand)}" data-adv-onhand>
+            <button type="button" class="btn btn--small btn--primary" data-adv="onhand-save">Save</button></div></div>
+        <p class="muted" data-onhand-saved>${hand ? `Last set by ${esc(hand.by)} at ${esc(fmtDateTime(hand.set_at))}: <strong>${formatPeso(hand.amount_centavos)}</strong>.` : 'Not set for today yet.'}</p>
+        <div id="onHandErr" role="alert"></div>
+      </div>
       ${saved}
       <div class="cash-grid mt-s">
         <div class="table-wrap"><table class="data cash-table">
@@ -148,8 +159,9 @@ function cashHtml() {
           <tbody class="cash-coins"><tr><th scope="col" colspan="4" class="cash-sub">Coins</th></tr>${coins.map(row).join('')}</tbody>
         </table></div>
         <div class="cash-sum panel">
-          <div class="cash-line cash-line--big"><span>Overall total</span><output id="cashTotal"></output></div>
-          <div class="cash-line"><span>Cash sales today <small class="muted">(cash or no payment recorded, after discounts and refunds)</small></span><span>${formatPeso(m.cash_sales_centavos)}</span></div>
+          <div class="cash-line cash-line--big"><span>Overall total <small class="muted">(counted)</small></span><output id="cashTotal"></output></div>
+          <div class="cash-line"><span>Cash on hand <small class="muted">(start of day)</small></span><span>${formatPeso(m.cash_on_hand_centavos)}</span></div>
+          <div class="cash-line"><span>Cash sales today <small class="muted">(cash, after discounts and refunds)</small></span><span>${formatPeso(m.cash_sales_centavos)}</span></div>
           <div class="cash-line"><span>Less expenses</span><span>&minus;${formatPeso(m.expenses_total_centavos)}</span></div>
           <div class="cash-line"><span>Expected cash</span><strong id="cashExpected" data-expected="${m.expected_cash_centavos}">${formatPeso(m.expected_cash_centavos)}</strong></div>
           <div class="cash-line cash-line--big"><span>Excess / Loss</span><output id="cashExcess"></output></div>
@@ -189,6 +201,20 @@ function updateCash() {
   return !bad;
 }
 
+const pesoPlainText = (c) => `${Math.floor(c / 100)}${c % 100 ? `.${String(c % 100).padStart(2, '0')}` : ''}`;
+
+async function saveOnHand(btn) {
+  if (adv.busy) return;
+  adv.busy = true; if (btn) btn.disabled = true;
+  try {
+    const money = await api('POST', '/api/cash-on-hand', { amount: adv.onHand === '' ? '0' : adv.onHand });
+    adv.data.money = money;
+    adv.onHand = null;
+    toast(`Cash on hand saved: ${formatPeso(money.cash_on_hand_centavos)}.`, 'ok');
+    draw();
+  } catch (err) { const box = $('#onHandErr'); if (box) box.innerHTML = errorBox(err); } finally { adv.busy = false; if (btn) btn.disabled = false; }
+}
+
 async function saveCash(btn) {
   if (!updateCash() || adv.busy) return;
   adv.busy = true; btn.disabled = true;
@@ -219,7 +245,8 @@ function expensesHtml() {
       <button type="button" class="btn btn--small" data-adv="line-del" data-v="${i}" aria-label="Remove line ${i + 1}" ${adv.lines.length === 1 ? 'disabled' : ''}>&times;</button>
     </div>`).join('');
   return `<section class="adv-section" aria-label="Expenses">
-      <p class="muted">What was paid out of the drawer today, one line each: what it was for and how much. They are taken off on the Daily Report (EXPENSES and LESS EXPENSES).</p>
+      <p class="muted">Money taken out of the drawer today.</p>
+      ${howItWorks('<p>One line for each: what it was for and how much. They are taken off on the Daily Report (EXPENSES and LESS EXPENSES).</p>')}
       <div class="exp-form panel mt-s">
         ${lines}
         <div class="exp-foot">
@@ -280,6 +307,7 @@ export function advancedClick(e) {
     case 'section': adv.section = v; draw(); break;
     case 'ref-pick': pickRef(v); break;
     case 'cash-save': saveCash(btn); break;
+    case 'onhand-save': saveOnHand(btn); break;
     case 'line-add': adv.lines.push({ item: '', amount: '' }); draw(); $(`#expItem${adv.lines.length - 1}`)?.focus(); break;
     case 'line-del': adv.lines.splice(Number(v), 1); draw(); break;
     case 'exp-save': saveExpenses(btn); break;
@@ -299,6 +327,12 @@ export function advancedInput(e) {
     updateCash();
     return true;
   }
+  if (t.dataset.advOnhand !== undefined) {
+    const clean = t.value.replace(',', '.').replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').replace(/(\.\d{2}).+$/, '$1').slice(0, 10);
+    if (clean !== t.value) t.value = clean;
+    adv.onHand = clean;
+    return true;
+  }
   if (t.dataset.advLine) {
     const line = adv.lines[Number(t.dataset.i)];
     if (!line) return true;
@@ -313,10 +347,11 @@ export function advancedInput(e) {
   return false;
 }
 
-/** Enter in an expense amount adds the next line; Enter in a cash box moves to the next box. */
+/** Enter in the Cash on hand box saves it. Enter in an expense amount adds the next line; Enter in a cash box moves to the next box. */
 export function advancedKeyDown(e) {
   const t = e.target;
   if (e.key !== 'Enter') return false;
+  if (t.dataset.advOnhand !== undefined) { e.preventDefault(); saveOnHand($('[data-adv="onhand-save"]')); return true; }
   if (t.dataset.advLine === 'amount') {
     e.preventDefault();
     const i = Number(t.dataset.i);

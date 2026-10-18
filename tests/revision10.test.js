@@ -497,7 +497,7 @@ test('upgrade 7 -> 8: every order, payment, stock figure and price is kept exact
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 12);   // 7 -> 8 -> 9 (Revision 11) in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);   // 7 -> 8 -> 9 (Revision 11) in one start
   // inventory_events gained two columns (empty for old rows); other_product_options is compared apart because new rows were added.
   // Version 9 added products.category and inventory_records.katay_milli; every other value is unchanged.
   const after = JSON.parse(dump(db));
@@ -561,7 +561,7 @@ test('upgrade 7 -> 8: if a step fails, nothing is half-changed - the file stays 
   check.close();
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v8-.*\.bak$/.test(f)), 'the safety copy was made before the first step');
   const fixed = openDb(file);                                          // the next start completes the upgrade
-  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 12);
+  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 13);
   assert.equal(fixed.prepare('SELECT COUNT(*) AS n FROM order_items').get().n, 4);
   fixed.close();
 });

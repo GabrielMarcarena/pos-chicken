@@ -8,7 +8,7 @@
 // chicken, the inventory losses Reject, Katay, Dead and Pull Out. Each number is saved as soon as it is entered. Changing a Beginning
 // Balance that already has a number is a correction: the screen asks for a reason, and the server keeps it in the history.
 import { api } from '../api.js';
-import { $, esc, toast, errorBox, openDialog, fmtDateTime } from '../util.js';
+import { $, esc, howItWorks, toast, errorBox, openDialog, fmtDateTime } from '../util.js';
 import { CHICKEN_COLUMNS, OTHER_COLUMNS, formatQty, previousBeginningText } from '/shared/inventory.js';
 import { INVENTORY_REASONS, REF_LABELS } from '/shared/constants.js';
 import {
@@ -209,7 +209,8 @@ function actionsHtml(d, open) {
         <button type="button" class="btn" data-inv="submit" ${canAct ? '' : 'disabled'}>${esc(SUBMIT_BUTTON_TEXT)}</button>
       </div>
       ${hint ? `<p class="muted mt-s" data-inv-hint>${esc(hint)}</p>` : ''}
-      <dl class="inv-help">
+      <p class="muted mt-s">Save keeps today's numbers. The day closes by itself at midnight.</p>
+      <details class="how"><summary>What each button does</summary><dl class="inv-help">
         <div><dt>${esc(SAVE_BUTTON_TEXT)}</dt>
           <dd>Keeps today's numbers in the database: <strong>one saved record per day</strong>. Press it again any time; the newer numbers replace the older ones. Nothing is downloaded and nothing is reset.</dd></div>
         <div><dt>At midnight <span class="muted">(automatic)</span></dt>
@@ -218,7 +219,7 @@ function actionsHtml(d, open) {
           <dd>Saves today's inventory as an Excel file on this computer and downloads a copy: every chicken product (Beginning Balance, Additional, Total, Sold, Left, Reject, Katay, Dead, Pull Out, New Total) and every other product (Beginning Balance, Additional, Sold, Left, New Total). Products with 0 in every column are left out, and the file says so. It changes nothing; use it whenever you want a copy during the day.</dd></div>
         <div><dt>${esc(EXPORT_BUTTON_TEXT)} <span class="muted">(closed days)</span></dt>
           <dd>Choose a closed day under <strong>Business day</strong> above: an <strong>${esc(EXPORT_BUTTON_TEXT)}</strong> button appears beside "Closed". It downloads that day's inventory as it was closed, laid out like the submitted file (chicken products, then other products). It changes nothing.</dd></div>
-      </dl>
+      </dl></details>
       <div id="invMsg" role="status" aria-live="polite"></div>
     </section>`;
 }
@@ -268,7 +269,7 @@ function render() {
     <section class="panel" aria-labelledby="invOther"><div class="panel-head"><h3 id="invOther">Other Products</h3><span class="muted">counted in pieces (or packs, sacks, cartons, trays); things sold by the kilo are counted in pieces too</span></div>
       ${tableHtml('other', OTHER_COLUMNS, shown(d.other))}
       ${hiddenNote(hidden, open && d.can_edit)}</section>
-    ${notebookHtml()}
+    <details class="how how--wide"><summary>How the numbers are worked out</summary>${notebookHtml()}</details>
     ${actionsHtml(d, open)}`;
 }
 

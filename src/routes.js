@@ -14,7 +14,7 @@ import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
 import { getInventory, stockSummary, updateRecord, closeCheck, startNewDay, inventoryDir, storeInRef, saveDay, savedDay } from './services/inventory.js';
 import { submitInventory, submissionFile, closeAndSubmit, closedDayExport } from './services/inventoryReport.js';
 import { refSummary } from './services/refStock.js';
-import { dayMoney, saveCashCount, addExpenses, removeExpense } from './services/cashbook.js';
+import { dayMoney, saveCashCount, saveCashOnHand, addExpenses, removeExpense } from './services/cashbook.js';
 import { CHICKEN_CATEGORIES, REF_LABELS } from '../shared/constants.js';
 import { toBusinessDate } from './time.js';
 
@@ -131,6 +131,7 @@ export function registerRoutes(r) {
   r.add('GET', '/api/advanced', 'cashier', (ctx) => ({ ref: refSummary(ctx.db), money: dayMoney(ctx.db, ctx.user, {}, ctx.now()) }));
   // Store a Katay or Dead chicken in the ref: it is also added to that chicken's Katay or Dead on the Daily Inventory.
   r.add('POST', '/api/ref/store', 'cashier', (ctx) => created(storeInRef(ctx.db, ctx.user, ctx.body, ctx.now())));
+  r.add('POST', '/api/cash-on-hand', 'cashier', (ctx) => created(saveCashOnHand(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/cash-count', 'cashier', (ctx) => created(saveCashCount(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/expenses', 'cashier', (ctx) => created(addExpenses(ctx.db, ctx.user, ctx.body, ctx.now())));
   r.add('POST', '/api/expenses/:id/remove', 'cashier', (ctx) => removeExpense(ctx.db, ctx.user, idParam(ctx), ctx.body, ctx.now()));
@@ -149,13 +150,13 @@ export function registerRoutes(r) {
   });
   r.add('GET', '/api/orders', 'cashier', (ctx) => ({ orders: listOrders(ctx.db, ctx.query) }));
   // Order List (Kanban board): the latest saved pickup status of every open order, and moving a card.
-  r.add('GET', '/api/board', 'cashier', (ctx) => listBoard(ctx.db));
+  r.add('GET', '/api/board', 'assistant', (ctx) => listBoard(ctx.db, ctx.user));
   // Tracking Number (Revision 15): the lowest free number, for the Auto button and for filling the box in on New order.
   r.add('GET', '/api/tracking-number/next', 'cashier', (ctx) => ({ tracking_number: nextFreeTrackingNumber(ctx.db) }));
   // Butcher screen (Revision 15): the open chicken orders with how to cut them, no prices. The display (TV) account may call only this one.
   r.add('GET', '/api/butcher', 'display', (ctx) => listButcher(ctx.db));
-  r.add('POST', '/api/orders/:id/fulfillment', 'cashier', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
-  r.add('PUT', '/api/orders/:id/bookmark', 'cashier', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
+  r.add('POST', '/api/orders/:id/fulfillment', 'assistant', (ctx) => moveOrder(ctx.db, ctx.user, idParam(ctx), ctx.body?.status, { now: ctx.now() }));
+  r.add('PUT', '/api/orders/:id/bookmark', 'assistant', (ctx) => setBookmark(ctx.db, idParam(ctx), ctx.body?.bookmarked));
   r.add('GET', '/api/orders/:id', 'cashier', (ctx) => ({ order: getOrder(ctx.db, idParam(ctx), ctx.user) }));
   r.add('POST', '/api/orders/:id/cancel', 'cashier', (ctx) => ({ order: cancelOrder(ctx.db, ctx.user, idParam(ctx), ctx.body, { now: ctx.now() }) }));
   r.add('POST', '/api/orders/:id/change', 'cashier', (ctx) => {
@@ -180,7 +181,7 @@ export function registerRoutes(r) {
     return { __raw: { headers: { 'Content-Type': XLSX, 'Content-Disposition': `attachment; filename="${dailyName(args, 'xlsx')}"`, 'X-Order-Count': String(data.orderCount) }, body: buildDailyXlsx(data) } };
   });
   // Who can be picked in the report's cashier filter.
-  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active && u.role !== 'display').map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
+  r.add('GET', '/api/staff', 'manager', (ctx) => ({ staff: listUsers(ctx.db).filter((u) => u.active && u.role !== 'display' && u.role !== 'assistant').map((u) => ({ id: u.id, display_name: u.display_name, role: u.role })) }));
 
   // ---- Export (manager and admin) ----
   const exportName = (ctx, ext) => `chicken-pos_${ctx.query.from || 'start'}_to_${ctx.query.to || 'latest'}.${ext}`.replace(/[^A-Za-z0-9._-]/g, '');

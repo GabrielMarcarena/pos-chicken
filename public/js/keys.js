@@ -9,6 +9,9 @@ import { openDialog } from './util.js';
 /** Is this a device with a keyboard and a mouse (a till), not a phone or tablet? The key badges are only shown there. */
 export const hasKeyboard = () => window.matchMedia?.('(pointer: fine)').matches ?? false;
 
+/** The keys that choose product cards on New order, in card order: 1 to 9, then 0, then the letter row Q to P (20 products). */
+export const PRODUCT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'];
+
 /** A small key label on a button, e.g. keyBadge('1') or keyBadge('Alt+2'). Nothing on touch screens. */
 export const keyBadge = (text) => (hasKeyboard() ? `<kbd class="key-badge" aria-hidden="true">${text}</kbd>` : '');
 
@@ -28,7 +31,7 @@ export function typingIn(el = document.activeElement) {
 
 export const SHORTCUTS = [
   ['Anywhere', [['F2', 'New order'], ['F4', 'Order List'], ['F8', 'Orders'], ['F9', 'Daily Inventory'], ['?', 'This list of keys'], ['Esc', 'Back, or cancel']]],
-  ['New order: choosing', [['1 to 9', 'Choose the product with that number (top row or number pad)'], ['← →', 'Chicken / Other products / Advanced'],
+  ['New order: choosing', [['1 to 9, 0, then Q W E R T Y U I O P', 'Choose the product with that key (the key is on its card: 1 to 9, then 0 is the 10th, Q the 11th, W the 12th ...)'], ['← →', 'Chicken / Other products / Advanced'],
     ['/', 'Search other products'], ['Enter', 'Review order']]],
   ['New order: one product', [['Numbers and .', 'Type the weight (or quantity)'], ['+ / −', 'One more / one less head (or piece)'],
     ['Alt+1 to Alt+9', 'Choose the service, the selling option, or which chicken (the number is on the button)'], ['Backspace', 'Delete the last number'],

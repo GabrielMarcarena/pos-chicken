@@ -157,3 +157,11 @@ export function otherQtyText(line) {
   return line.pieces ? `${line.pieces} pc${line.pieces === 1 ? '' : 's'} · ${kg}` : kg;
 }
 const formatThousandthsLocal = (n) => { let s = (n / 1000).toFixed(3).replace(/0+$/, ''); if (s.endsWith('.')) s += '0'; return s; };
+
+/**
+ * A short explanation folded away. Each page keeps one short line; the full explanation opens with "How it works" when someone wants it
+ * (Revision 16). html is trusted markup written in this app, never text typed by a person.
+ */
+export function howItWorks(html, title = 'How it works') {
+  return `<details class="how"><summary>${title}</summary><div class="how-body">${html}</div></details>`;
+}

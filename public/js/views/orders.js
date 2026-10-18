@@ -1,7 +1,7 @@
 // Order history: find an order by number, see exactly what was saved, and cancel, change or refund it.
 import { api, download } from '../api.js';
 import { state, saveDraft, newDraft, refreshConfig, stockOptionOf, findProduct } from '../state.js';
-import { $, esc, label, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
+import { $, esc, label, howItWorks, formatPeso, formatThousandths, fmtDateTime, fmtDate, todayPH, toast, errorBox, openDialog, closeDialog, confirmDialog, orderStatusBadges, uuid } from '../util.js';
 import { REASONS, ACTION_LABELS, PAYMENT_METHODS, STATUS_LABELS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE } from '/shared/constants.js';
 import { orderTable } from './slip.js';
 import { resetCheckoutUi } from './checkout.js';
@@ -34,7 +34,8 @@ export async function mountOrders(root) {
     </div>
     <div class="panel">
       <div class="panel-head"><h2>Daily Sales Report</h2></div>
-      <p class="muted">The report from your paper form, filled in with what the app knows: sales by chicken type (and Katay / Dead from the ref), heads, kilos, prices, service, eggs, other products, the list of discounts, the expenses and the cash breakdown typed in New order &gt; Advanced, and the totals. The chicken and egg balances are left empty for you to count by hand. The date is the business day the orders were sold on.${isManager() ? '' : ' It shows your own sales.'}</p>
+      <p class="muted">The day's sales on your paper form, as an Excel file.${isManager() ? '' : ' It shows your own sales.'}</p>
+      ${howItWorks(`<p>The report from your paper form, filled in with what the app knows: sales by chicken type (and Katay / Dead from the ref), heads, kilos, prices, service, eggs, other products, the list of discounts, the expenses and the cash breakdown typed in New order &gt; Advanced, and the totals. The chicken and egg balances are left empty for you to count by hand. The date is the business day the orders were sold on.</p>`)}
       <div id="dailyError"></div>
       <div class="filters mt-s">
         <div class="field"><label for="dDate">Report date</label><input id="dDate" type="date" value="${esc(todayPH())}"></div>
@@ -44,11 +45,12 @@ export async function mountOrders(root) {
     </div>
     ${isManager() ? `<div class="panel">
       <div class="panel-head"><h2>Spreadsheet export</h2></div>
-      <p class="muted">Downloads the orders sold on the business days from <strong>From</strong> to <strong>To</strong> above (choose "All saved orders, by date" to set them).
+      <p class="muted">Download the orders between <strong>From</strong> and <strong>To</strong> above.</p>
+      ${howItWorks(`<p>Choose "All saved orders, by date" above to set the dates.
         <strong>Excel</strong> has every detail of every order (canceled orders in red, with daily, weekly and monthly summaries).
         <strong>Sales List</strong> has only the important report columns of the orders that were sold, one row per item, as an Excel file whose
         columns are wide enough to read. <strong>CSV</strong> is the same list as plain text for other programs; a CSV file cannot remember column
-        widths, so Excel opens it with narrow columns.</p>
+        widths, so Excel opens it with narrow columns.</p>`)}
       <div id="exportError"></div>
       <div class="btn-row mt-s">
         <button type="button" class="btn btn--primary" id="exportXlsx">Download Excel (.xlsx)</button>

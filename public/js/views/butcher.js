@@ -5,7 +5,6 @@
 // It asks the server every few seconds. If the server cannot be reached it says so and keeps the last orders on screen.
 import { api } from '../api.js';
 import { esc, prepChips, formatKg } from '../util.js';
-import { state } from '../state.js';
 
 const POLL_MS = 3000;
 const NEW_FOR_MS = 60_000;
@@ -21,10 +20,8 @@ export async function mountButcher(root) {
   document.title = 'Butcher - Chicken POS';
   document.body.classList.add('display-mode', 'display-butcher');
   seen.clear(); firstLoad = true; lastJson = ''; orders = [];
-  const staff = state.user?.role !== 'display';
   root.innerHTML = `<div class="bt">
-      <header class="bt-head"><h1>BUTCHER</h1><div class="bt-head-r"><span id="btOffline" class="bt-offline" hidden>Not connected &mdash; trying again&hellip;</span><span id="btClock" class="bt-clock"></span>
-        ${staff ? '<a class="bt-exit" href="#/new">Back to POS</a>' : ''}</div></header>
+      <header class="bt-head"><h1>BUTCHER</h1><div class="bt-head-r"><span id="btOffline" class="bt-offline" hidden>Not connected &mdash; trying again&hellip;</span><span id="btClock" class="bt-clock"></span></div></header>
       <div class="bt-grid"><section class="bt-ongoing" aria-label="Ongoing orders"><h2 class="bt-h">Ongoing <span id="btOnN" class="bt-n">0</span></h2><div id="btOn" class="bt-cards"></div><div id="btOnEmpty" class="bt-empty">No orders to prepare.</div></section>
         <aside class="bt-standby" aria-label="Ready for pickup"><h2 class="bt-h bt-h--dim">Ready for pickup <span id="btStN" class="bt-n">0</span></h2><ul id="btSt" class="bt-sb"></ul><p id="btStEmpty" class="bt-sbempty">None waiting.</p></aside></div>
     </div>`;

@@ -29,6 +29,6 @@ export function listenAsCustomer(onMessage) {
 
 /** Cashier side: open the Customer screen in its own clean window (no tabs, no address bar controls in most browsers). */
 export function openCustomerWindow() {
-  const w = window.open('/#/customer', 'pos-customer', 'popup,width=1024,height=768');
+  const w = window.open('/customerscreen', 'pos-customer', 'popup,width=1024,height=768');
   return w;
 }

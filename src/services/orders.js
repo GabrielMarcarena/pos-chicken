@@ -51,7 +51,7 @@ const maskName = (n) => (n ? n.split(/\s+/).map((w) => `${w[0]}•••`).join(
 /** Shape an order for the API. Cashiers see payment account details masked. */
 export function presentOrder(o, viewer) {
   const full = ROLE_RANK[viewer.role] >= ROLE_RANK.manager;
-  return {
+  const shaped = {
     id: o.id,
     order_number: o.order_number,
     business_date: o.business_date,
@@ -98,6 +98,23 @@ export function presentOrder(o, viewer) {
       related_number: e.related_number,
     })),
   };
+  return viewer.role === 'assistant' ? hideMoney(shaped) : shaped;
+}
+
+/**
+ * The Assistant Cashier (Revision 16) only moves orders along, so no price, payment or history ever leaves the server for that role.
+ * Works on an order or on a board card. The lines keep what the butcher needs: product, heads, weight and how it is prepared.
+ */
+const MONEY_KEYS = ['subtotal_centavos', 'discount', 'discount_centavos', 'discount_reason', 'total_centavos', 'refund_centavos', 'cashier_name'];
+const LINE_MONEY_KEYS = ['price_per_kg_centavos', 'weight_amount_centavos', 'fees', 'service_fee_centavos', 'line_total_centavos', 'unit_price_centavos'];
+function hideMoney(o) {
+  const out = { ...o };
+  for (const k of MONEY_KEYS) delete out[k];
+  const lines = (list) => list?.map((l) => Object.fromEntries(Object.entries(l).filter(([k]) => !LINE_MONEY_KEYS.includes(k))));
+  for (const k of ['items', 'other_items', 'ref_items']) if (out[k]) out[k] = lines(out[k]);
+  if ('payments' in out) out.payments = [];
+  if ('events' in out) out.events = [];
+  return out;
 }
 
 export function getOrder(db, id, viewer) {
@@ -193,7 +210,7 @@ function assignTracking(db, draft) {
  * Canceled and replaced orders are not on the board: they were never going to be picked up. Refunded orders stay,
  * marked, so nobody hands out a refunded order by mistake.
  */
-export function listBoard(db) {
+export function listBoard(db, viewer = null) {
   const open = db.prepare("SELECT id, business_date FROM business_days WHERE status = 'OPEN'").get() ?? null;
   const rows = db.prepare(`
     SELECT o.id, o.order_number, o.business_date, o.customer_number, o.tracking_number, o.status, o.fulfillment_status, o.bookmarked,
@@ -218,7 +235,7 @@ export function listBoard(db) {
     other_items: other.all(o.id).map((i) => ({ kind: 'other', name: i.product_name, unit: i.unit, sold_by: i.sold_by, quantity_milli: i.quantity_milli, pieces: i.pieces ?? null })),
     ref_items: ref.all(o.id).map((i) => ({ kind: 'ref', ref_kind: i.ref_kind, name: i.product_name, heads: i.heads, weight_g: i.weight_g })),
   }));
-  return { columns: FULFILLMENT, open_day: open?.business_date ?? null, orders: cards };
+  return { columns: FULFILLMENT, open_day: open?.business_date ?? null, orders: viewer?.role === 'assistant' ? cards.map(hideMoney) : cards };
 }
 
 /**

@@ -2,9 +2,9 @@
 // Revision 12: the Advanced button (left of Chicken and Other products) opens the ref stock of Katay and Dead chicken, the cash breakdown
 // and the expenses (see advanced.js). A Katay or Dead chicken from the ref is sold here by the kilo, at a price the cashier types.
 import { api } from '../api.js';
-import { setScreenKeys, keyBadge, typingIn, hasKeyboard } from '../keys.js';
+import { setScreenKeys, keyBadge, typingIn, hasKeyboard, PRODUCT_KEYS } from '../keys.js';
 import { state, saveDraft, clearDraft, onDraftSaved, findProduct, findOption, priceItem, priceOther, priceRef, draftTotals, draftLineCount, refreshConfig, hasStock, savedHeads, savedMilli, availableHeads, availableMilli, stockOptionOf, savedRefHeads, availableRefHeads, refProducts } from '../state.js';
-import { $, esc, label, formatPeso, formatKg, formatThousandths, uuid, toast, errorBox, confirmDialog, prepChips, fmtDateTime, iconFor, productPicture, watchImages } from '../util.js';
+import { $, esc, label, howItWorks, formatPeso, formatKg, formatThousandths, uuid, toast, errorBox, confirmDialog, prepChips, fmtDateTime, iconFor, productPicture, watchImages } from '../util.js';
 import { emptyPrep, applyPrepChange, validatePrep, serviceOf, needsSliceSize } from '/shared/rules.js';
 import { parseWeightToGrams, parseQuantityToMilli, parseWholeQuantityToMilli, parsePesosToCentavos, parseHeads, MAX_HEADS } from '/shared/money.js';
 import { chickenLine, otherLine, refLine } from '/shared/pricing.js';
@@ -107,7 +107,7 @@ function renderGrid() {
     grid.innerHTML = products.length
       ? `${staleNote()}${hasStock() ? `<p class="stock-total" id="stockTotal" data-stock="chicken-total">Number of Heads: <strong>${totalHeads}</strong></p>` : ''}
         <div class="product-grid">${products.map((p, i) => `
-          <button type="button" class="product-card" data-action="pick-product" data-id="${p.id}">${i < 9 ? keyBadge(String(i + 1)) : ''}
+          <button type="button" class="product-card" data-action="pick-product" data-id="${p.id}">${PRODUCT_KEYS[i] ? keyBadge(PRODUCT_KEYS[i]) : ''}
             <span class="ico" aria-hidden="true">${productPicture('chicken', p)}</span>
             <span class="meta"><span class="name">${esc(p.name)}</span><span class="price">${formatPeso(p.price_per_kg_centavos)}/kg</span>
               ${hasStock() ? `<span class="stock${savedHeads(p.id) === 0 ? ' stock--out' : ''}" data-stock="chicken-${p.id}">Number of Heads: ${savedHeads(p.id)}</span>` : ''}</span>
@@ -119,7 +119,7 @@ function renderGrid() {
   const shown = others.filter((p) => !q || p.name.toLowerCase().includes(q));
   grid.innerHTML = shown.length
     ? `${staleNote()}<div class="product-grid">${shown.map((p, i) => `
-        <button type="button" class="product-card" data-action="pick-other" data-id="${p.id}">${i < 9 ? keyBadge(String(i + 1)) : ''}
+        <button type="button" class="product-card" data-action="pick-other" data-id="${p.id}">${PRODUCT_KEYS[i] ? keyBadge(PRODUCT_KEYS[i]) : ''}
           <span class="ico" aria-hidden="true">${productPicture('other', p)}</span>
           <span class="meta"><span class="name">${esc(p.name)}</span>
             <span class="opts">${p.options.map((o) => `<span class="price">${formatPeso(o.price_centavos)}/${esc(o.unit)}</span>`).join('')}</span>
@@ -599,7 +599,7 @@ function renderReview() {
   const d = state.draft;
   const rows = d.items.map((item) => {
     const p = priceItem(item);
-    const chips = prepChips(item.prep).map((c) => `<span class="chip">${esc(c)}</span>`).join('')
+    const chips = prepChips(item.prep).map((c) => `<span class="chip chip--prep">${esc(c)}</span>`).join('')   // chip--prep: not printed on the receipt
       + p.fees.filter((f) => f.amount > 0).map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(label(f.code))}${f.basis === 'per_head' && p.heads > 1 ? ` (${p.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
     return `<tr><td><strong>${esc(p.product.name)}</strong><div class="chips">${chips}</div></td>
       <td>${p.heads > 1 ? `${p.heads} heads &middot; ` : ''}${formatKg(p.weightG)} kg</td><td class="num">${formatPeso(p.product.price_per_kg_centavos)}/kg</td><td class="num">${formatPeso(p.lineTotal)}</td>
@@ -664,7 +664,8 @@ function renderDiscount() {
   const reasons = Object.entries(DISCOUNT_REASONS).map(([v, t]) => `<option value="${v}" ${d.reason === v ? 'selected' : ''}>${esc(t)}</option>`).join('');
   $('#discPanel').innerHTML = `
     <div class="panel-head"><h3>Discount <span class="muted">(optional)</span></h3></div>
-    <p class="muted">For example a bulk order, wholesale, employee, Dead or Katay discount. Type the amount or the percentage; it comes off the whole order, and the reason is saved on the order. A Dead or Katay discount is about the price only: it does not change the Daily Inventory.</p>
+    <p class="muted">Comes off the whole order. Pick a reason.</p>
+    ${howItWorks('<p>For example a bulk order, wholesale, employee, Dead or Katay discount. Type the amount or the percentage; it comes off the whole order, and the reason is saved on the order. A Dead or Katay discount is about the price only: it does not change the Daily Inventory.</p>')}
     <div class="discount-fields">
       <div class="field"><label for="discType">Discount</label><select id="discType">${types}</select></div>
       ${on ? `<div class="field"><label for="discValue">${d.type === 'FIXED' ? 'Amount (₱)' : 'Percent (%)'}</label><input id="discValue" type="text" inputmode="decimal" value="${esc(d.value)}" placeholder="${d.type === 'FIXED' ? 'for example 50' : 'for example 20'}" autocomplete="off"></div>
@@ -1151,8 +1152,9 @@ function checkoutKeys(e) {
   }
   if (ui.step === 'pick') {
     if (typing || !plain) return false;
-    if (/^[1-9]$/.test(e.key)) {
-      const card = [...document.querySelectorAll('#work .product-card')][Number(e.key) - 1];
+    const at = e.key.length === 1 ? PRODUCT_KEYS.indexOf(e.key.toUpperCase()) : -1;   // 1-9, 0, then Q W E R T Y U I O P
+    if (at !== -1) {
+      const card = [...document.querySelectorAll('#work .product-card')][at];
       if (!card) return false;
       card.click();
       return true;

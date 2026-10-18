@@ -102,7 +102,8 @@ export const ACTION_LABELS = {
 export const FEE_BASIS = ['per_item', 'per_head', 'per_kg'];
 export const FEE_BASIS_LABELS = { per_item: 'per line (flat)', per_head: 'per head', per_kg: 'per kg' };
 // 'display' (Revision 15) is a screen-only account for the butcher TV: it can open the Butcher screen and nothing else.
-export const ROLES = ['cashier', 'manager', 'admin', 'display'];
+// 'assistant' (Revision 16) is the Assistant Cashier: the Order List and the Butcher view only, no prices.
+export const ROLES = ['cashier', 'manager', 'admin', 'display', 'assistant'];
 
 // Other products: a fixed price per piece/pack/sack/carton/tray (or an older dozen/batch), or a price per kg.
 export const SOLD_BY = { FIXED: 'Fixed price', PER_KG: 'Per kg' };

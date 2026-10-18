@@ -8,11 +8,15 @@
 //   * The star bookmarks an order so it is easy to find again. The bookmark is saved on the order itself.
 //   * Sorting and the "Bookmarked only" filter only change what is shown, never the orders.
 import { api } from '../api.js';
-import { $, $$, esc, formatPeso, formatKg, toast, errorBox, confirmDialog, prepChips, otherQtyText } from '../util.js';
+import { $, $$, esc, howItWorks, formatPeso, formatKg, toast, errorBox, confirmDialog, prepChips, otherQtyText } from '../util.js';
 import { FULFILLMENT, FULFILLMENT_LABELS, FULFILLMENT_HINTS, PAYMENT_METHODS, DISCOUNT_REASONS } from '/shared/constants.js';
 import { SORTS, DEFAULT_SORT, sortOrders, customerName, timeOf } from '/shared/boardSort.js';
 import { formatDateMDY } from '/shared/inventory.js';
 import { openDetail } from './orders.js';
+import { state } from '../state.js';
+
+// The Assistant Cashier (Revision 16) only moves orders along: no prices, no payments, no order details. The server sends no money to that role either.
+const noMoney = () => state.user?.role === 'assistant';
 
 const ICONS = { ONGOING: '⏳', STANDBY: '🛍️', COMPLETE: '✅' };
 const MENU_TEXT = { ONGOING: 'Move to Ongoing', STANDBY: 'Move to Standby', COMPLETE: 'Mark as Complete' };
@@ -74,12 +78,13 @@ export async function mountBoard(root) {
           </div>
           <button type="button" class="btn btn--small" id="boardZoom" aria-pressed="${view.zoomedOut}" title="Show the board smaller so more orders fit on the screen">${view.zoomedOut ? 'Normal size' : 'Zoom out'}</button>
           <button type="button" class="btn btn--small" id="boardRefresh">Refresh</button>
-          <a class="btn btn--small" id="boardButcher" href="/#/butcher" target="_blank" rel="noopener" title="Opens the screen the butcher TV shows, in a new tab">Butcher view</a>
+          <a class="btn btn--small" id="boardButcher" href="/butcher" target="_blank" rel="noopener" title="Opens the screen the butcher TV shows, in a new tab">Butcher view</a>
         </div>
       </div>
-      <p class="muted">Tap a card to open or fold it. Drag a card to another column, or right-click it (on a phone or tablet, tap <strong>Move</strong>) to change its status.
+      <p class="muted">Drag a card to another column, or tap <strong>Move</strong>, to change its status.</p>
+      ${howItWorks(`<p>Tap a card to open or fold it. Drag a card to another column, or right-click it (on a phone or tablet, tap <strong>Move</strong>) to change its status.
         Tap the star to bookmark an order. Mark an order <strong>Complete</strong> only when the customer has received it.
-        Complete orders leave this list when the day is closed; Standby orders stay until they are claimed.</p>
+        Complete orders leave this list when the day is closed; Standby orders stay until they are claimed.</p>`)}
       <div id="boardNote" aria-live="polite"></div>
       <div id="boardFilterNote" aria-live="polite"></div>
     </div>
@@ -193,18 +198,20 @@ function detailHtml(o, lines) {
       <span class="kline-qty">${esc(l.qty)}</span>
       ${l.chips.length ? `<span class="chips">${l.chips.map((c) => `<span class="chip">${esc(c)}</span>`).join('')}</span>` : ''}</li>`).join('');
   const facts = [['Customer', esc(customerText(o))], ['Ordered', esc(fullWhen(o.submitted_at))]];
-  if (o.discount_centavos > 0) {
+  if (!noMoney() && o.discount_centavos > 0) {
     facts.push(['Subtotal', formatPeso(o.subtotal_centavos)]);
     facts.push(['Discount', `−${formatPeso(o.discount_centavos)}${o.discount_reason ? ` (${esc(DISCOUNT_REASONS[o.discount_reason] ?? o.discount_reason)})` : ''}`]);
   }
-  facts.push(['Total', `<strong>${formatPeso(o.total_centavos)}</strong>`], ['Payment', paymentHtml(o)]);
-  if (o.refund_centavos > 0) facts.push(['Refunded', formatPeso(o.refund_centavos)]);
-  facts.push(['Cashier', esc(o.cashier_name)]);
+  if (!noMoney()) {
+    facts.push(['Total', `<strong>${formatPeso(o.total_centavos)}</strong>`], ['Payment', paymentHtml(o)]);
+    if (o.refund_centavos > 0) facts.push(['Refunded', formatPeso(o.refund_centavos)]);
+    facts.push(['Cashier', esc(o.cashier_name)]);
+  }
   return `<div class="kcard-detail" id="kd-${o.id}">
     <ul class="kcard-lines">${items}</ul>
     <dl class="kcard-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
     <div class="kcard-actions">
-      <button type="button" class="btn btn--small btn--plain" data-open="${o.id}">Details</button>
+      ${noMoney() ? '' : `<button type="button" class="btn btn--small btn--plain" data-open="${o.id}">Details</button>`}
       <button type="button" class="btn btn--small btn--plain" data-toggle="${o.id}">Show less</button>
     </div>
   </div>`;
@@ -218,7 +225,7 @@ function cardHtml(o) {
   const no = esc(o.order_number);
   return `<article class="kcard${refunded ? ' kcard--refunded' : ''}${busy ? ' kcard--saving' : ''}${open ? ' kcard--open' : ''}${o.bookmarked ? ' kcard--bookmarked' : ''}" data-card="${o.id}" data-status="${o.fulfillment_status}"
       draggable="${busy ? 'false' : 'true'}" tabindex="0" aria-busy="${busy}"
-      aria-label="${no}, ${o.tracking_number != null ? `tracking number ${o.tracking_number}, ` : ''}${esc(customerText(o))}, ${esc(FULFILLMENT_LABELS[o.fulfillment_status])}, ${formatPeso(o.total_centavos)}${o.bookmarked ? ', bookmarked' : ''}. Press Enter to ${open ? 'fold' : 'open'} it, the Menu key to move it.">
+      aria-label="${no}, ${o.tracking_number != null ? `tracking number ${o.tracking_number}, ` : ''}${esc(customerText(o))}, ${esc(FULFILLMENT_LABELS[o.fulfillment_status])}${noMoney() ? '' : `, ${formatPeso(o.total_centavos)}`}${o.bookmarked ? ', bookmarked' : ''}. Press Enter to ${open ? 'fold' : 'open'} it, the Menu key to move it.">
     <div class="kcard-top">
       <button type="button" class="kcard-toggle" data-toggle="${o.id}" aria-expanded="${open}"${open ? ` aria-controls="kd-${o.id}"` : ''} aria-label="Details of ${no}">
         <span class="kcard-chev" aria-hidden="true">▸</span><span class="kcard-no">${no}</span>
@@ -229,7 +236,7 @@ function cardHtml(o) {
     </div>
     <div class="kcard-row">
       <span class="kcard-cust" title="${esc(customerText(o))}">${esc(customerText(o))}</span>
-      <strong class="kcard-total">${formatPeso(o.total_centavos)}</strong>
+      ${noMoney() ? '' : `<strong class="kcard-total">${formatPeso(o.total_centavos)}</strong>`}
     </div>
     ${summaryHtml(lines)}
     <div class="kcard-meta">
@@ -485,7 +492,7 @@ function openMenu(id, x, y, returnFocus) {
         <span aria-hidden="true">${ICONS[s]}</span> ${esc(MENU_TEXT[s])}${s === order.fulfillment_status ? ' <span class="muted">(current)</span>' : ''}</button>`).join('')}
     <hr>
     <button type="button" role="menuitem" class="kmenu-item" data-menu-bookmark="1"><span aria-hidden="true">${order.bookmarked ? '★' : '☆'}</span> ${order.bookmarked ? 'Remove bookmark' : 'Bookmark this order'}</button>
-    <button type="button" role="menuitem" class="kmenu-item" data-menu-details="1">View order details</button>`;
+    ${noMoney() ? '' : '<button type="button" role="menuitem" class="kmenu-item" data-menu-details="1">View order details</button>'}`;
   menu.dataset.id = String(id);
   menu._returnFocus = returnFocus;
   document.body.append(menu);
@@ -501,7 +508,7 @@ function openMenu(id, x, y, returnFocus) {
     closeMenu();
     if (move) await requestMove(id, move.dataset.menuMove);
     else if (mark) toggleBookmark(id);
-    else showDetails(id);
+    else if (!noMoney()) showDetails(id);
   };
   menu.onkeydown = (e) => {
     const items = $$('.kmenu-item:not(:disabled)', menu);

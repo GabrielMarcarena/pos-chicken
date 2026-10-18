@@ -4,7 +4,46 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 15): Tracking Number, Butcher screen, Customer screen
+## What changed in this version (revision 16): colour pointers, Assistant Cashier, cleaner receipt, shorter texts, Cash on hand, more product keys
+
+The database is upgraded in place (version 12 → 13) with a safety copy first (`data/pos.db.before-v13-<time>.bak`). The users table is rebuilt so it accepts the new role (every account, id and sign-in is kept) and one table is added (`cash_on_hand`). Where this section and the sections below disagree, **this section is the current behaviour**.
+
+**Each role has its own mouse pointer.** The pointer glows in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. The top bar has a strip and a badge in the same colour (a touch screen has no pointer, so the strip tells you who is signed in). The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
+
+**New role: Assistant Cashier.** For a helper who only updates order status.
+- Sees the **Order List** and the **Butcher view** button, nothing else (no New order, Orders, Inventory, Products, Users, exports).
+- Can move cards between Ongoing / Standby / Complete and bookmark them.
+- **No prices anywhere:** the server does not even send totals, payments, discounts or cashier names to this role, and there is no Details button.
+- Add one in **Users > Add user** and pick **Assistant Cashier**.
+
+**Butcher and Customer screens have their own addresses.**
+- `yourdomain/butcher`: the Butcher screen. It **asks for a sign-in** (the Butcher TV account, or any staff account), then shows the orders. The **Back to POS link is gone**; a staff member closes the preview tab instead. Names stay on the TV.
+- `yourdomain/customerscreen`: the Customer screen. **No sign-in.** It works only on the **same computer** as the cashier window (the second monitor): the two windows talk inside that computer, so opened on another device it only shows "Welcome".
+- When the app is online, use **HTTPS** so passwords are protected on the way.
+- The old addresses `#/butcher` and `#/customer` still work.
+
+**Receipt.** On paper only: the service name (for example Po-ur & Slice), **With Blood** and the slice size (Medium pieces) are not printed. The prices stay, and so does the fee line (for example **+₱135.00 Dress (3 × ₱45.00)**). On the screen the cashier still sees everything while checking the order.
+
+**Shorter texts.** The long explanations are now one short line, with the full text folded under **How it works** (click to open): Order List, Orders (Daily Report and Export), Daily Inventory (what each button does, and "How the numbers are worked out"), Cash breakdown, Expenses, Discount, Users (what each role can do) and the picture box in Products. Nothing was deleted, only moved. The delete-account question is shorter too.
+
+**Cash on hand (New order > Advanced > Cash breakdown).** The starting cash (panukli) put in the drawer for change.
+- Type it once a day and press **Save** (saving again adds a new amount; the latest one counts and the earlier ones stay in the history).
+- The summary now reads: **Overall total** (counted) · **Cash on hand** · **Cash sales today** (on its own line, cash only, after discounts and refunds) · **Less expenses** · **Expected cash** · **Excess / Loss**.
+- **Expected cash = Cash on hand + Cash sales today − Expenses.**
+- The **Daily Report** has a new row **PLUS CASH ON HAND** just above EXPECTED CASH, and EXPECTED CASH adds it (as a formula too). Without a cash on hand the report is the same as before.
+
+**More product keys.** On New order the product cards are chosen with **1 to 9, then 0 (10th), then Q W E R T Y U I O P (11th to 20th)**. Each card shows its key, and the `?` key list was updated.
+
+**Please confirm (decisions I made).**
+1. The Assistant Cashier's colour is **blue** (you named red, yellow and green only).
+2. The Assistant Cashier **cannot** save the Cash on hand or anything else on New order, and cannot open order Details.
+3. The fee line on the receipt keeps its own fee name (**Pour** or **Dress**), as it did before, not the long service name.
+4. Cash on hand can be set by any cashier, manager or admin (not by the Assistant). Only the open business day can be set.
+5. Products beyond the 20th have no key; tap them.
+
+**Tests:** `npm test` runs 215 automated tests (7 are new: the Assistant sees no money and is refused everything else, the Assistant role can be created and edited, Cash on hand and Expected cash, the locked history and the open-day rule, the Daily Report row, and the 12 → 13 upgrade). The screens were driven in headless Chromium (12 checks: the pointer of every role, the Assistant's Order List, `/butcher` with sign-in and no Back link, `/customerscreen` with no sign-in, the printed receipt, keys 0 / Q / W with 12 products, the folded texts and Cash on hand): all passed. The old browser test (`npm run test:e2e`) is unchanged: 24 of 67 pass, the same 43 that already failed in revision 13.
+
+## Earlier: revision 15: Tracking Number, Butcher screen, Customer screen
 
 The database is upgraded in place (version 11 → 12) with a safety copy first (`data/pos.db.before-v12-<time>.bak`). Old orders keep every value; they simply have no tracking number. Where this section and the sections below disagree, **this section is the current behaviour**.
 
