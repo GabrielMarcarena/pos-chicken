@@ -43,8 +43,8 @@ const closeAtMidnight = () => {
 closeAtMidnight();
 const midnightTimer = setInterval(closeAtMidnight, 60_000);
 
-const server = createApp({ db, config }).listen(config.port, () => {
-  console.log(`Chicken POS is running at http://localhost:${config.port}  (database: ${config.dbPath})`);
+const server = createApp({ db, config }).listen(config.port, config.host || undefined, () => {
+  console.log(`Chicken POS is running at http://${config.host || 'localhost'}:${config.port}  (database: ${config.dbPath})`);
 });
 
 // Stopping with Ctrl+C closes the database cleanly, so the data file (pos.db) is complete on its own.

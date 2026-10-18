@@ -1,0 +1,6 @@
+# Caddy gives the site its padlock (HTTPS) automatically and passes visitors to the app.
+# Copy to /etc/caddy/Caddyfile, put YOUR address on the first line, then:  sudo systemctl reload caddy
+pitikpos.duckdns.org {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}

@@ -4,7 +4,16 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 16): colour pointers, Assistant Cashier, cleaner receipt, shorter texts, Cash on hand, more product keys
+## What changed in this version (revision 17): ready to go online, records cleared, new browser tests
+
+- **Going online.** A step-by-step guide for a free server (Oracle Cloud, Singapore), a free address (DuckDNS), the padlock (Caddy) and nightly backups to Google Drive: [docs/deploy/online-hosting-guide.md](docs/deploy/online-hosting-guide.md). The ready-made files are in `deploy/` (auto-start service, Caddy settings, daily backup, update and address scripts). New settings in `.env.example`: `HOST` (listen only on this computer, for use behind Caddy) and `TRUST_PROXY` (use each visitor's real address for the sign-in limit; off by default, so nobody can fake it). Without them the app behaves exactly as before in the shop.
+- **Clearing records now works on every table.** `npm run clear-records` failed since revision 16, because the new Cash on hand table pointed at the days it deletes. Fixed, with a test. New option `npm run clear-records -- --everything`: also deletes the open business day (every stock number, cash count, expense and cash on hand) and all sign-ins, and keeps users, products, prices and fees. The app opens a fresh day the first time someone uses it.
+- **This shop's database was cleared with it** (12 test orders, 4 inventory days, 14 price changes). Kept: the admin account, 4 chicken products, 12 other products with their ways of selling, the prices and the service fees. The old backups, upgrade copies and saved inventory files of the test days were deleted.
+- **Browser tests replaced.** The old `tests/e2e.mjs` checked screens that were redesigned in revision 13 (43 of its 67 checks could not pass). It was moved to `tests/old/` for reference and replaced by two current suites, `npm run test:browser` (27 checks: tracking number, customer and butcher screens, pointers, Assistant Cashier, receipt, cash on hand, product keys, feathers, chicken).
+- **Smaller fixes:** `npm run create-user` now lists the Assistant and Butcher TV roles; the old hand-over notes moved to `docs/history/`.
+- **Tests:** `npm test` runs 221 automated tests (6 new), on both UTC and Asia/Manila clocks.
+
+## Earlier: revision 16: colour pointers, Assistant Cashier, cleaner receipt, shorter texts, Cash on hand, more product keys
 
 The database is upgraded in place (version 12 → 13) with a safety copy first (`data/pos.db.before-v13-<time>.bak`). The users table is rebuilt so it accepts the new role (every account, id and sign-in is kept) and one table is added (`cash_on_hand`). Where this section and the sections below disagree, **this section is the current behaviour**.
 
@@ -99,7 +108,7 @@ Anyone on the shop Wi-Fi can reach the sign-in page, so keep strong passwords an
 5. The Butcher screen has **no Done button**; it only animates when an order changes. Orders move on the Order List as before. *(You confirmed this.)*
 
 **Tests:** `npm test` runs 208 automated tests (14 are new: the duplicate rule, reuse after Complete / cancel / change, the 100 limit, two cashiers at once, the locked number, the Butcher feed with no prices, the TV account's limits and no idle sign-out, and the 11 → 12 upgrade including the rebuilt users table). The new screens were also driven in headless Chromium (cashier, customer window and butcher TV side by side, including the move animation and the Live rule): all 12 checks passed.
-**Known problem, not caused by this revision:** the old browser test `npm run test:e2e` is out of date. 43 of its 67 checks already fail on revision 13 (for example it looks for the Close button that revision 13 removed). It needs updating before it is useful again.
+**Known problem (fixed in revision 17):** the old browser test `npm run test:e2e` was out of date; it was replaced by `npm run test:browser`.
 
 ## Earlier: revision 14
 
@@ -336,7 +345,7 @@ Runs once, automatically, when the new version starts on an older file, inside o
 npm start                 # your real shop data (data/pos.db)
 npm run demo              # sample data in data/demo.db, with sample stock
 npm test                  # 140 automated tests
-npm run test:e2e          # 62 browser checks (needs: npm install, npx playwright install chromium)
+npm run test:browser      # current browser checks (needs: npm install, npx playwright install chromium)  [revision 17; was test:e2e]
 ```
 
 Quick check by hand (use demo mode, not the real database): 1) New order: pick a chicken, choose Pour & Dukot and see no slice size is asked for. 2) Review: choose Cash, type Money Received 1000 on a ₱456.00 order, see Change ₱544.00. 3) Daily Inventory: see the order you just placed under Sold and the New Total drop. 4) Back on New order, export the CSV and Excel report. 5) Start New Business Day: Cancel (nothing changes), Export Report (the dialog stays), then Confirm, and see the next day's Beginning Balance equal the last New Total.
@@ -625,7 +634,7 @@ Orders > Spreadsheet export downloads `.xlsx` or `.csv` for the date range. The 
 7. Your request said "Try to make the appearance more" and was cut off; I read it as more modern and easier to scan (pictures, clearer cards).
 8. Other-product starter prices are unknown, so none were invented.
 
-**Hosting.** The app needs a computer that runs Node 22.13+ and keeps a file on disk (a shop PC, a small VPS, or a host with a persistent disk). Static hosts such as Netlify cannot run it. This was not deployed to any host during development.
+**Hosting.** The app needs a computer that runs Node 22.13+ and keeps a file on disk (a shop PC, a small VPS, or a host with a persistent disk). Static hosts such as Netlify cannot run it. This was not deployed to any host during development. **Update (revision 17):** a full step-by-step guide for going online is in [docs/deploy/online-hosting-guide.md](docs/deploy/online-hosting-guide.md).
 
 ## 5. Running the tests
 
@@ -633,7 +642,7 @@ Orders > Spreadsheet export downloads `.xlsx` or `.csv` for the date range. The 
 npm test                 # 157 tests: money, services, units, cash change, heads, discounts, daily report, sorting, database safeguards and upgrades (2→3→4→5→6→7→8), full API incl. payments, the Order List, bookmarks and Delete Account, the clear-records command, the Daily Inventory, stock, reports and closing, and the Revision 10 behaviour (reasons, italic note, Order List clearing, units, hidden rows, exports)
 npm install              # only for the browser test: installs Playwright
 npx playwright install chromium
-npm run test:e2e         # 67 checks driving the real screens in Chromium (the seven services, the cash calculator, stock lines, Daily Inventory and its reason box, the report and Whole Inventory downloads, Submit Closing Inventory, Order List clearing and zoom, drag and drop, right-click, folded and open cards, bookmarks, sorting, Delete Account, Orders vs Order List status and colours, and phone-size screens)
+npm run test:browser     # (revision 17: replaces test:e2e) checks driving the real screens in Chromium (the seven services, the cash calculator, stock lines, Daily Inventory and its reason box, the report and Whole Inventory downloads, Submit Closing Inventory, Order List clearing and zoom, drag and drop, right-click, folded and open cards, bookmarks, sorting, Delete Account, Orders vs Order List status and colours, and phone-size screens)
 ```
 
 Last results (Node 22.22, revision 10): `npm test` **157 of 157 passed**; browser test **67 of 67 passed**; the preview page's own browser checks **28 of 28 passed** (revision 10 preview). Both suites were also run from the unzipped package and from a folder whose name contains a space, such as `POS device` (see the final report for the exact results).

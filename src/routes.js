@@ -31,13 +31,21 @@ const idParam = (ctx) => {
   if (!Number.isInteger(id) || id < 1) throw new HttpError(404, 'Not found.', 'NOT_FOUND');
   return id;
 };
+/** The visitor's address. Only behind our own proxy (TRUST_PROXY=1) is the forwarded header believed, and then only its last entry (the one the proxy added). */
+export function clientIp(ctx) {
+  if (ctx.config?.trustProxy) {
+    const last = String(ctx.req.headers['x-forwarded-for'] ?? '').split(',').pop().trim();
+    if (last) return last;
+  }
+  return ctx.req.socket.remoteAddress;
+}
 const created = (body) => ({ __status: 201, body });
 
 export function registerRoutes(r) {
   // ---- Session ----
   r.add('POST', '/api/login', 'public', (ctx) => {
     const { username, password } = ctx.body;
-    const key = `${String(username ?? '').toLowerCase()}|${ctx.req.socket.remoteAddress}`;
+    const key = `${String(username ?? '').toLowerCase()}|${clientIp(ctx)}`;
     if (loginLimiter.blocked(key)) throw new HttpError(429, 'Too many tries. Wait 15 minutes, then try again.', 'RATE_LIMIT');
     const user = authenticate(ctx.db, username, password);
     if (!user) {

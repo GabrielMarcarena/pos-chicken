@@ -3,6 +3,8 @@
 > **Update 2026-10-18:** the Tracking Number, the Butcher screen and the Customer screen from section 5 were built in Revision 15 (see README). The rest of this document (backups, going online, offline vs online) is still open.
 
 
+> **Update 2026-10-19 (revision 17):** going online is now a guide plus ready-made files: `docs/deploy/online-hosting-guide.md` and `deploy/`. Done: the real visitor address behind a proxy (`TRUST_PROXY`), a daily backup script that keeps 14 days and the last 3 upgrade copies and can copy to Google Drive, and the old browser test replaced. Still open: automatic removal of expired sign-ins, and splitting very large files (`checkout.js`, the README).
+
 ## Context
 You asked four things:
 1. What can be improved in the website.
