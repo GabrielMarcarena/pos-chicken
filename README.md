@@ -8,9 +8,12 @@ Built with plain JavaScript on Node.js and SQLite. There is nothing to install e
 
 The database is upgraded in place (version 12 → 13) with a safety copy first (`data/pos.db.before-v13-<time>.bak`). The users table is rebuilt so it accepts the new role (every account, id and sign-in is kept) and one table is added (`cash_on_hand`). Where this section and the sections below disagree, **this section is the current behaviour**.
 
-**Each role has its own mouse pointer.** The pointer glows in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. **Only the pointer is coloured; the top bar looks the same for everyone.** The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
+**Each role has its own mouse pointer.** The pointer is a plain arrow (and a hand on buttons and links) in the colour of whoever is signed in: **Admin red, Manager yellow, Cashier green, Assistant Cashier blue**. Buttons and links show a hand version of the same pointer. **Only the pointer is coloured; the top bar looks the same for everyone.** The sign-in page, the Butcher screen and the Customer screen keep the normal pointer.
 
-**Click feathers and a wandering chicken** (computers with a mouse only). Every mouse click throws a tiny burst of feathers in your role colour. If nobody touches the mouse or keyboard for **1 minute**, one chicken wanders around the screen, pecking here and there; it hurries off the moment you move the mouse. Neither can ever block a click, and neither shows on the sign-in page, the Butcher screen, the Customer screen or a touch screen. If the computer is set to "reduce motion", there are no feathers and the chicken just stands still.
+**Click feathers (admin only) and the Pitik chicken** (computers with a mouse only).
+- When the **admin** clicks, a tiny burst of red feathers pops out. Other roles get none.
+- If nobody touches the mouse or keyboard for **1 minute**, one chicken (drawn after your Pitik animation) wanders around the screen. It **pecks the screen and leaves a small crack that fades in about 10 seconds**, and bits of feed fly up. Now and then it stops, **stares out at you and blinks**, and its **eye follows the mouse pointer**. The moment you move the mouse or press a key, it hurries off and its cracks disappear.
+- Neither can ever block a click, and neither shows on the sign-in page, the Butcher screen, the Customer screen or a touch screen. If the computer is set to "reduce motion", there are no feathers, and the chicken just stands still (it still blinks and watches the pointer).
 
 **New role: Assistant Cashier.** For a helper who only updates order status.
 - Sees the **Order List** and the **Butcher view** button, nothing else (no New order, Orders, Inventory, Products, Users, exports).
