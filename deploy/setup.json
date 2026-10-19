@@ -1,0 +1,352 @@
+{
+  "version": 1,
+  "chicken": [
+    {
+      "name": "B-Cull",
+      "category": "BCULL",
+      "price": "80.00",
+      "active": true
+    },
+    {
+      "name": "Broiler",
+      "category": "BROILER",
+      "price": "110.00",
+      "active": true
+    },
+    {
+      "name": "Cull",
+      "category": "CULL",
+      "price": "60.00",
+      "active": true
+    },
+    {
+      "name": "Brown Cull Chicken",
+      "category": "CULL",
+      "price": null,
+      "active": false
+    }
+  ],
+  "other": [
+    {
+      "name": "Beans",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": "36.00",
+          "active": true
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Catfish",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": "150.00",
+          "active": true
+        },
+        {
+          "unit": "pack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": "50.00",
+          "active": true
+        }
+      ]
+    },
+    {
+      "name": "Ducks",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Eggs (Large)",
+      "kind": "EGGS",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "carton",
+          "price": "50.00",
+          "active": true
+        },
+        {
+          "unit": "tray",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Eggs (Medium)",
+      "kind": "EGGS",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "carton",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "tray",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Eggs (Small)",
+      "kind": "EGGS",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "carton",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "tray",
+          "price": "100.00",
+          "active": true
+        }
+      ]
+    },
+    {
+      "name": "Etag (Smoked)",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": "25.00",
+          "active": true
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Etag (Sun-Dried)",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": "26.00",
+          "active": true
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Garlic",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": "5.00",
+          "active": true
+        },
+        {
+          "unit": "pack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Laya",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": "36.00",
+          "active": true
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Onions",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": "10.00",
+          "active": true
+        },
+        {
+          "unit": "pack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": null,
+          "active": false
+        }
+      ]
+    },
+    {
+      "name": "Sayote",
+      "kind": "OTHER",
+      "active": true,
+      "options": [
+        {
+          "unit": "piece",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "pack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "sack",
+          "price": null,
+          "active": false
+        },
+        {
+          "unit": "kg",
+          "price": "25.00",
+          "active": true
+        }
+      ]
+    }
+  ],
+  "fees": [
+    {
+      "code": "POUR",
+      "amount": "45.00",
+      "basis": "per_head"
+    },
+    {
+      "code": "NOT_POUR",
+      "amount": "25.00",
+      "basis": "per_head"
+    }
+  ]
+}

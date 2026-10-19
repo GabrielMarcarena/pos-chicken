@@ -24,6 +24,10 @@ export function loadConfig(overrides = {}) {
     cookieSecure: env.COOKIE_SECURE ?? 'auto',
     // 1 when the app sits behind our own web server (Caddy): the visitor's real address is then the last X-Forwarded-For entry.
     trustProxy: ['1', 'true'].includes(String(env.TRUST_PROXY ?? '').toLowerCase()),
+    // Where the saved daily inventory files go. Empty = backups/inventory. On a host, point it at the persistent disk.
+    inventoryDir: env.INVENTORY_DIR || undefined,
+    // A setup.json (see src/services/setupData.js) that a brand-new database loads once at start. Empty = none.
+    setupFile: env.SETUP_FILE ?? '',
     largeWeightKg: Number(env.LARGE_WEIGHT_KG ?? 50),
     ...overrides,
   };
