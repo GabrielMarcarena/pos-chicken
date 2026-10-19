@@ -1,4 +1,4 @@
-// Browser test for Revision 19 (every service has its own price; the admin adds, renames, prices and hides services).
+// Browser test for Revisions 19-20 (every service has its own price on the old-style Service fees table; the admin adds, renames and hides services).
 // Drives the real screens in Chromium with its own in-memory database. Run:  npm run test:browser
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
@@ -45,23 +45,27 @@ await owner.goto(base + '/#/products');
 await owner.click('[data-tab="fees"]');
 await owner.waitForSelector('[data-row]');
 
-await check('Products, Services lists all seven with their own fee; Live has none; the old two-row table is gone', async () => {
-  assert.equal(await owner.locator('[data-row]').count(), 7);
-  const live = owner.locator('[data-row="LIVE"]');
-  assert.equal(await live.locator('[data-f="fee"]').count(), 0, 'Live has no fee box');
-  for (const code of ['POUR', 'NOT_POUR', 'POUR_SLICE', 'NOT_POUR_SLICE', 'POUR_DUKOT', 'NOT_POUR_DUKOT']) assert.ok(await owner.locator(`[data-row="${code}"] [data-f="fee"]`).count(), code);
-  assert.equal(await owner.inputValue('[data-row="POUR_SLICE"] [data-f="fee"]'), '45.00');
-  assert.equal(await owner.inputValue('[data-row="NOT_POUR_DUKOT"] [data-f="fee"]'), '25.00');
+await check('Service fees keeps the old look: one row per paid service (Live is not listed), each with its own fee, Charged, Save and Edit', async () => {
+  assert.match(await owner.locator('[data-tab="fees"]').innerText(), /Service fees/);
+  assert.equal(await owner.locator('[data-row]').count(), 6);
+  assert.equal(await owner.locator('[data-row="LIVE"]').count(), 0);
+  for (const code of ['POUR', 'NOT_POUR', 'POUR_SLICE', 'NOT_POUR_SLICE', 'POUR_DUKOT', 'NOT_POUR_DUKOT']) {
+    assert.ok(await owner.locator(`[data-fee="${code}"]`).count(), code);
+    assert.ok(await owner.locator(`[data-save="${code}"]`).count() && await owner.locator(`[data-edit="${code}"]`).count(), code);
+  }
+  assert.equal(await owner.inputValue('[data-fee="POUR_SLICE"]'), '45.00');
+  assert.equal(await owner.inputValue('[data-fee="NOT_POUR_DUKOT"]'), '25.00');
+  assert.equal(await owner.locator('[data-row] input[type="text"]:not([data-fee])').count(), 0, 'no name boxes in the table: names are changed with Edit');
   assert.ok(await owner.locator('[data-add]').count(), 'the Add service button is there');
   await owner.screenshot({ path: SHOTS + '/r19-1-services.png' });
 });
 
 await check('the admin gives Po-ur & Slice its own price', async () => {
-  await owner.fill('[data-row="POUR_SLICE"] [data-f="fee"]', '60');
+  await owner.fill('[data-fee="POUR_SLICE"]', '60');
   await owner.click('[data-save="POUR_SLICE"]');
-  await owner.waitForSelector('[data-row="POUR_SLICE"] [data-f="fee"]');
-  await owner.waitForFunction(() => document.querySelector('[data-row="POUR_SLICE"] [data-f="fee"]')?.value === '60.00');
-  assert.equal(await owner.inputValue('[data-row="POUR_DUKOT"] [data-f="fee"]'), '45.00', 'the other Pour services did not move');
+  await owner.waitForSelector('.toast:has-text("Po-ur & Slice fee saved")');
+  const fees = await owner.evaluate(async () => (await (await fetch('/api/services')).json()).services.map((x) => [x.code, x.fee_centavos]));
+  assert.deepEqual(fees.filter(([c]) => c.startsWith('POUR')), [['POUR', 4500], ['POUR_SLICE', 6000], ['POUR_DUKOT', 4500]], 'only Po-ur & Slice changed');
 });
 
 await check('Add service: a Dress, whole, ₱30 per head service called Deboned appears in the list', async () => {
@@ -75,9 +79,9 @@ await check('Add service: a Dress, whole, ₱30 per head service called Deboned 
   await owner.screenshot({ path: SHOTS + '/r19-2-add-service.png' });
   await owner.click('dialog button:has-text("Add service")');
   await owner.waitForSelector('[data-row="SVC_1"]');
-  assert.equal(await owner.inputValue('[data-row="SVC_1"] [data-f="label"]'), 'Deboned');
-  assert.equal(await owner.inputValue('[data-row="SVC_1"] [data-f="fee"]'), '30.00');
-  assert.equal(await owner.locator('[data-row]').count(), 8);
+  assert.match(await owner.locator('[data-row="SVC_1"]').innerText(), /Deboned[\s\S]*\(added\)/);
+  assert.equal(await owner.inputValue('[data-fee="SVC_1"]'), '30.00');
+  assert.equal(await owner.locator('[data-row]').count(), 7);
 });
 
 await check('a duplicate name is refused with a clear message and nothing is added', async () => {
@@ -87,7 +91,7 @@ await check('a duplicate name is refused with a clear message and nothing is add
   await owner.waitForSelector('#sErr .error, #sErr [role="alert"], #sErr:has-text("already exists")');
   assert.match(await owner.locator('#sErr').innerText(), /already exists/);
   await owner.click('dialog button:has-text("Cancel")');
-  assert.equal(await owner.locator('[data-row]').count(), 8);
+  assert.equal(await owner.locator('[data-row]').count(), 7);
 });
 
 const cash = await newPage(await ctx());
@@ -126,11 +130,13 @@ await check('selling with Deboned: weight 3.0 kg x 100 + 3 heads x 30 = ₱390.0
 });
 
 await check('hiding Deboned removes the button; the sold order still shows its name; renaming does not change the old order', async () => {
-  await owner.fill('[data-row="SVC_1"] [data-f="label"]', 'Deboned Plus');
-  await owner.click('[data-save="SVC_1"]');
-  await owner.waitForFunction(() => document.querySelector('[data-row="SVC_1"] [data-f="label"]')?.value === 'Deboned Plus');
-  await owner.click('[data-toggle="SVC_1"]');
-  await owner.waitForFunction(() => document.querySelector('[data-toggle="SVC_1"]')?.textContent.trim() === 'Show');
+  await owner.click('[data-edit="SVC_1"]');
+  await owner.waitForSelector('#eLabel');
+  await owner.fill('#eLabel', 'Deboned Plus');
+  await owner.uncheck('#eShown');
+  await owner.screenshot({ path: SHOTS + '/r19-5-edit.png' });
+  await owner.click('dialog button:has-text("Save changes")');
+  await owner.waitForFunction(() => /Deboned Plus[\s\S]*hidden/.test(document.querySelector('[data-row="SVC_1"]')?.innerText ?? ''));
   await cash.reload();
   await cash.waitForSelector('.product-card');
   await cash.click('.product-card:has-text("Broilers")');

@@ -4,9 +4,16 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 19): every service has its own price, and an Add service button
+## What changed in this version (revision 20): the old Service fees look, with every service and Add service
 
-- **Products, Services** (was "Service fees"). Every service the cashier can pick is listed with its own **name, note, fee and how it is charged** (per line, per head or per kg). Before, Pour, Po-ur & Slice and Pour & Dukot all shared one "Pour" fee, and the three Dress services shared one "Dress" fee, so only two rows showed. Live never has a fee (the database enforces it).
+- **Products, Service fees** keeps its old look (name in bold, Fee, Charged, Save), now with **one row for every paid service** the cashier sees on New order (Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot and any you add). Live never has a fee, so it is not listed.
+- **+ Add service** adds a new service (name, note, Pour or Dress, whole / sliced / Dukot, fee). It becomes a button on New order.
+- **Edit** (next to Save) renames a service, changes its short note, or hides it from New order. Hidden services are never deleted; old orders keep their name.
+- Underneath it is Revision 19 (below): each service has its own fee, and a sold line keeps the service name and fee it was sold with. Revision 19's separate "Services" table design was not kept.
+
+## Earlier: revision 19: every service has its own price, and an Add service button
+
+- **Products, Services** (renamed back to "Service fees" with the old look in revision 20). Every service the cashier can pick is listed with its own **name, note, fee and how it is charged** (per line, per head or per kg). Before, Pour, Po-ur & Slice and Pour & Dukot all shared one "Pour" fee, and the three Dress services shared one "Dress" fee, so only two rows showed. Live never has a fee (the database enforces it).
 - **Nothing changes in the money on upgrade.** Each service starts with the fee it effectively had (the three Pour services with the Pour fee, the three Dress services with the Dress fee), so every price and total is the same until the admin edits one.
 - **Add service** (admin). A new service is a new button on New order. The admin gives it a name, an optional note, whether it is a **Pour or Dress** service (the butcher screen and the reports group by this), the **cutting** (whole, sliced with a size, or Dukot) and its own fee. The admin can also rename a service, change its note or fee, and **Hide** it (hidden services leave New order but are never deleted, so old orders keep reading).
 - **A sold line keeps the name it was sold under.** The service code and name are saved on each new order line, and the receipt's fee line carries its fee name (built-in ones keep "Pour" / "Dress", as in Revision 16). Renaming or hiding a service later never changes an old order.

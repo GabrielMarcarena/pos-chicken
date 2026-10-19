@@ -9,7 +9,7 @@ const pesoInput = (c) => (c ? `${Math.floor(c / 100)}.${String(c % 100).padStart
 let tab = 'chicken';
 
 export async function mountCatalog(root) {
-  const tabs = [['chicken', 'Chicken products'], ['other', 'Other products'], ['fees', 'Services'], ...(isAdmin() ? [['history', 'Price history']] : [])];
+  const tabs = [['chicken', 'Chicken products'], ['other', 'Other products'], ['fees', 'Service fees'], ...(isAdmin() ? [['history', 'Price history']] : [])];
   root.innerHTML = `<div class="panel"><div class="panel-head"><h1>Products</h1></div>
     <div class="tabs" role="tablist">${tabs.map(([id, text]) => `<button type="button" class="tab" role="tab" aria-selected="${tab === id}" data-tab="${id}">${esc(text)}</button>`).join('')}</div>
     <div id="tabBody"></div></div>`;
@@ -334,9 +334,9 @@ async function pictureDialog(kind, product) {
   if (changed) { toast('Picture saved.', 'ok'); reload(); }
 }
 
-// ---- Services (Revision 19) ----------------------------------------------------------------------
-// Every service the cashier can pick has its own name, note and fee. The admin adds services, renames and prices them, and can hide
-// one (it is never deleted, so old orders keep reading correctly). Live never has a fee.
+// ---- Service fees (Revision 20: the old table, one row per service) -------------------------------
+// Every service the cashier can pick has its own fee. The admin adds services (+ Add service), and Edit renames one or hides it (it is
+// never deleted, so old orders keep reading correctly). Live never has a fee, so it is not listed.
 
 const KIND_TEXT = { LIVE: 'Live chicken', POUR: 'Pour (burned)', NOT_POUR: 'Dress (dressed)' };
 const CUT_TEXT = { NONE: 'whole', SLICE: 'sliced, asks the size', DUKOT: 'Dukot' };
@@ -345,49 +345,65 @@ const serviceAbout = (s) => (s.kind === 'LIVE' ? KIND_TEXT.LIVE : `${KIND_TEXT[s
 async function feesTab(body) {
   const { services } = await api('GET', '/api/services');
   const admin = isAdmin();
-  const rows = services.map((s) => {
-    const free = s.kind === 'LIVE';
-    if (!admin) {
-      return `<tr class="${s.active ? '' : 'muted'}"><td><strong>${esc(s.label)}</strong>${s.active ? '' : ' <span class="chip">hidden</span>'}<div class="hint">${esc(serviceAbout(s))}</div></td>
-        <td>${free ? 'No fee' : formatPeso(s.fee_centavos)}</td><td>${free ? '' : FEE_BASIS_LABELS[s.fee_basis]}</td><td></td></tr>`;
-    }
-    return `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}">
-      <td><input type="text" maxlength="40" aria-label="Name of ${esc(s.label)}" data-f="label" value="${esc(s.label)}">
-        <input type="text" maxlength="80" class="mt-s" aria-label="Note under ${esc(s.label)}" data-f="note" placeholder="Short note under the button" value="${esc(s.note)}">
-        <div class="hint">${esc(serviceAbout(s))}${s.builtin ? '' : ' · added by you'}${s.active ? '' : ' · <strong>hidden</strong>'}</div></td>
-      <td>${free ? '<span class="muted">No fee</span>' : `<input type="text" inputmode="decimal" aria-label="${esc(s.label)} fee in pesos" data-f="fee" value="${esc(pesoInput(s.fee_centavos) || '0')}">`}</td>
-      <td>${free ? '' : `<select aria-label="${esc(s.label)} fee basis" data-f="basis">${FEE_BASIS.map((b) => `<option value="${b}" ${s.fee_basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select>`}</td>
-      <td class="right"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
-        <button type="button" class="btn btn--small" data-toggle="${esc(s.code)}" data-active="${s.active ? 1 : 0}">${s.active ? 'Hide' : 'Show'}</button></td></tr>`;
+  // Live never has a fee, so it is not listed. Every other service has its own row, in the order the cashier sees them.
+  const rows = services.filter((s) => s.kind !== 'LIVE').map((s) => {
+    const name = `<strong>${esc(s.label)}</strong>${s.builtin ? '' : ' <span class="muted">(added)</span>'}${s.active ? '' : ' <span class="chip">hidden</span>'}`;
+    return admin
+      ? `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td>
+          <td><input type="text" inputmode="decimal" aria-label="${esc(s.label)} fee in pesos" data-fee="${esc(s.code)}" value="${esc(pesoInput(s.fee_centavos) || '0')}"></td>
+          <td><select aria-label="${esc(s.label)} fee basis" data-basis="${esc(s.code)}">${FEE_BASIS.map((b) => `<option value="${b}" ${s.fee_basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select></td>
+          <td class="right"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
+            <button type="button" class="btn btn--small" data-edit="${esc(s.code)}">Edit</button></td></tr>`
+      : `<tr class="${s.active ? '' : 'muted'}"><td>${name}</td><td>${formatPeso(s.fee_centavos)}</td><td>${FEE_BASIS_LABELS[s.fee_basis]}</td><td></td></tr>`;
   });
   body.innerHTML = `
-    <div class="note-box">Each service has its own fee, charged on top of the chicken price. <strong>Live</strong> never has a fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight. <strong>Hide</strong> takes a service off the New order screen; old orders keep it.' : 'Only the admin can change these.'}</div>
+    <div class="note-box">These are charged on top of the chicken price. <strong>Live</strong> never has a fee. Each service has its own fee, the same one the cashier sees on New order. <strong>With Blood</strong> has no fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight.' : 'Only the admin can change these.'}</div>
     ${admin ? '<div class="mt-s"><button type="button" class="btn btn--primary" data-add="1">+ Add service</button></div>' : ''}
     <div id="feeMsg"></div>
     <div class="table-wrap mt-s"><table class="data"><thead><tr><th>Service</th><th>Fee (₱)</th><th>Charged</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
   if (!admin) return;
-  const done = async (text) => { $('#feeMsg').innerHTML = ''; toast(text, 'ok'); await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
   body.onclick = async (e) => {
     try {
       if (e.target.closest('[data-add]')) { await serviceDialog(); return; }
+      const edit = e.target.closest('[data-edit]');
+      if (edit) { await editServiceDialog(services.find((s) => s.code === edit.dataset.edit)); return; }
       const save = e.target.closest('[data-save]');
-      if (save) {
-        const row = save.closest('tr');
-        const f = (k) => row.querySelector(`[data-f="${k}"]`);
-        const payload = { label: f('label').value, note: f('note').value };
-        if (f('fee')) { payload.fee = f('fee').value; payload.basis = f('basis').value; }
-        await api('PUT', `/api/services/${save.dataset.save}`, payload);
-        await done(`${f('label').value.trim()} saved.`);
-        return;
-      }
-      const toggle = e.target.closest('[data-toggle]');
-      if (toggle) {
-        const hide = toggle.dataset.active === '1';
-        await api('PUT', `/api/services/${toggle.dataset.toggle}`, { active: !hide });
-        await done(hide ? 'Service hidden from New order.' : 'Service shown on New order.');
-      }
+      if (!save) return;
+      const code = save.dataset.save;
+      const s = services.find((x) => x.code === code);
+      await api('PUT', `/api/services/${code}`, { fee: $(`[data-fee="${code}"]`, body).value, basis: $(`[data-basis="${code}"]`, body).value });
+      $('#feeMsg').innerHTML = '';
+      toast(`${s.label} fee saved.`, 'ok');
+      await refreshConfig(api).catch(() => {});
     } catch (err) { $('#feeMsg').innerHTML = errorBox(err); }
   };
+}
+
+/** Edit: rename a service, change the small note under its button, or hide it from New order (it is never deleted, so old orders keep it). */
+async function editServiceDialog(s) {
+  const saved = await openDialog({
+    title: `Edit ${s.label}`,
+    body: `<div id="eErr"></div><div class="form-grid">
+        <div class="field"><label for="eLabel">Name (the button on New order)</label><input id="eLabel" type="text" maxlength="40" value="${esc(s.label)}"></div>
+        <div class="field"><label for="eNote">Short note <span class="muted">(optional)</span></label><input id="eNote" type="text" maxlength="80" value="${esc(s.note)}"></div>
+        <div class="field"><label><input id="eShown" type="checkbox" ${s.active ? 'checked' : ''}> Show on New order</label>
+          <span class="hint">Untick to hide it. Orders already sold with it keep its name.</span></div>
+        <div class="field"><span class="hint">${esc(serviceAbout(s))}. This part cannot be changed; to make a different kind, add a new service.</span></div>
+      </div>`,
+    actions: [
+      { label: 'Cancel', value: false },
+      {
+        label: 'Save changes', kind: 'primary',
+        onClick: async (dlg) => {
+          try {
+            await api('PUT', `/api/services/${s.code}`, { label: $('#eLabel', dlg).value, note: $('#eNote', dlg).value, active: $('#eShown', dlg).checked });
+            return true;
+          } catch (err) { $('#eErr', dlg).innerHTML = errorBox(err); return false; }
+        },
+      },
+    ],
+  });
+  if (saved === true) { toast('Service saved.', 'ok'); await reload(); }
 }
 
 /** The Add service form: a name, what it is (so the butcher and the reports know), and its own fee. */

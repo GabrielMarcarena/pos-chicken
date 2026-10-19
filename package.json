@@ -1,6 +1,6 @@
 {
   "name": "chicken-pos",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "private": true,
   "type": "module",
   "description": "Cashier POS and order records for a chicken retail shop (Phase 1 MVP)",
