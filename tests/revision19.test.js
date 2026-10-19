@@ -230,15 +230,17 @@ test('upgrade 13 -> 14: a safety copy first; every order, line, fee and total is
 
   // make the file a genuine version-13 file: no services table, no service columns on the lines
   const raw = new DatabaseSync(file);
-  raw.exec('DROP TABLE services; ALTER TABLE order_items DROP COLUMN service_code; ALTER TABLE order_items DROP COLUMN service_label; PRAGMA user_version = 13;');
+  raw.exec('DROP TABLE services; ALTER TABLE order_items DROP COLUMN service_code; ALTER TABLE order_items DROP COLUMN service_label;');
+  for (const t of ['products', 'other_products']) raw.exec(`ALTER TABLE ${t} DROP COLUMN removed_at; ALTER TABLE ${t} DROP COLUMN removed_by; ALTER TABLE ${t} DROP COLUMN purged;`);
+  raw.exec('PRAGMA user_version = 13;');
   const snap = (d) => JSON.stringify(['orders', 'order_items', 'payments', 'service_fees', 'products'].map((t) => d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()));
   const before = snap(raw);
   raw.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 15);
   assert.ok(fs.readdirSync(dir).some((f) => /^pos\.db\.before-v14-\d+\.bak$/.test(f)), 'a safety copy was made');
-  const strip = JSON.stringify(JSON.parse(snap(db)).map((rows) => rows.map(({ service_code: _a, service_label: _b, ...r }) => r)));
+  const strip = JSON.stringify(JSON.parse(snap(db)).map((rows) => rows.map(({ service_code: _a, service_label: _b, removed_at: _c, removed_by: _d, purged: _e, ...r }) => r)));
   assert.equal(strip, before, 'everything that existed is unchanged');
   assert.deepEqual(db.prepare('SELECT code, fee_centavos, fee_basis FROM services ORDER BY sort').all().map((r) => [r.code, r.fee_centavos, r.fee_basis]), [
     ['LIVE', 0, 'per_head'], ['POUR', 4500, 'per_head'], ['NOT_POUR', 2500, 'per_item'], ['POUR_SLICE', 4500, 'per_head'],
@@ -251,6 +253,6 @@ test('upgrade 13 -> 14: a safety copy first; every order, line, fee and total is
   const o = getOrder(db, sold.data.order.id, { role: 'admin' });
   assert.deepEqual([o.items[0].service, o.items[0].service_label], ['POUR_SLICE', 'Po-ur & Slice']);
   db.close();
-  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 14, 'a second start changes nothing');
+  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 15, 'a second start changes nothing');
   fs.rmSync(dir, { recursive: true, force: true });
 });

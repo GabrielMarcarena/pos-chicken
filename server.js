@@ -7,6 +7,7 @@ import { bootstrapAdmin } from './src/services/users.js';
 import { seedStarterCatalog, seedRevision11Products } from './src/services/catalog.js';
 import { importSetup } from './src/services/setupData.js';
 import { inventoryDir } from './src/services/inventory.js';
+import { purgeExpired } from './src/services/removal.js';
 import { midnightClose } from './src/services/inventoryReport.js';
 
 const config = loadConfig();
@@ -56,6 +57,16 @@ const closeAtMidnight = () => {
 closeAtMidnight();
 const midnightTimer = setInterval(closeAtMidnight, 60_000);
 
+// Revision 21: things removed more than 7 days ago are gone for good. Checked at start and every hour.
+const purgeRemoved = () => {
+  try {
+    const n = purgeExpired(db, new Date());
+    if (n) console.log(`${n} removed item(s) were more than 7 days old and are gone for good.`);
+  } catch (err) { console.error(`Clearing old removed items did not work this time (${err.message}); it is tried again in an hour.`); }
+};
+purgeRemoved();
+const purgeTimer = setInterval(purgeRemoved, 3_600_000);
+
 const server = createApp({ db, config }).listen(config.port, config.host || undefined, () => {
   console.log(`Chicken POS is running at http://${config.host || 'localhost'}:${config.port}  (database: ${config.dbPath})`);
 });
@@ -65,6 +76,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     console.log('Stopping Chicken POS...');
     clearInterval(midnightTimer);
+    clearInterval(purgeTimer);
     server.close();
     try { db.close(); } catch { /* already closed */ }
     process.exit(0);

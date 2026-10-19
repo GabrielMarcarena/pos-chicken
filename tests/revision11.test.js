@@ -592,7 +592,7 @@ test('upgrade to version 9: categories are filled in, Katay starts at 0, the his
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 15);
   assert.deepEqual(db.prepare('SELECT name, category FROM products ORDER BY id').all().map((p) => [p.name, p.category]),
     [['B-Cull', 'BCULL'], ['Cull Chicken', 'CULL'], ['Broilers', 'BROILER'], ['Native', 'OTHER']]);
   assert.ok(db.prepare('SELECT katay_milli FROM inventory_records').all().every((r) => r.katay_milli === 0));
@@ -609,7 +609,7 @@ test('upgrade to version 9: categories are filled in, Katay starts at 0, the his
   assert.ok(inv.other.some((r) => r.name === 'Garlic - piece'));
   db.close();
   const again = openDb(file);
-  assert.equal(again.prepare('PRAGMA user_version').get().user_version, 14, 'a second start changes nothing');
+  assert.equal(again.prepare('PRAGMA user_version').get().user_version, 15, 'a second start changes nothing');
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).length, 1, 'and makes no second copy');
   again.close();
   fs.rmSync(dir, { recursive: true, force: true });

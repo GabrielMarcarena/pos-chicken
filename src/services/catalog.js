@@ -34,9 +34,15 @@ function readCategory(input, name) {
 const isAdmin = (user) => ROLE_RANK[user.role] >= ROLE_RANK.admin;
 const clean = (value, max) => String(value ?? '').trim().slice(0, max);
 
-function duplicateGuard(fn, what) {
+function duplicateGuard(fn, what, db = null, name = '', table = null, col = 'name') {
   try { return fn(); } catch (err) {
-    if (String(err.message).includes('UNIQUE')) throw new HttpError(409, `A ${what} with this name already exists.`, 'DUPLICATE');
+    if (String(err.message).includes('UNIQUE')) {
+      // Revision 21: the name may belong to something that was removed less than 7 days ago (the admin can restore it).
+      if (db && table && name && db.prepare(`SELECT 1 FROM ${table} WHERE ${col} = ? AND removed_at IS NOT NULL AND purged = 0`).get(name)) {
+        throw new HttpError(409, `${name} was removed recently. Ask the admin to restore it, or wait until it is gone for good (7 days).`, 'DUPLICATE');
+      }
+      throw new HttpError(409, `A ${what} with this name already exists.`, 'DUPLICATE');
+    }
     throw err;
   }
 }
@@ -49,7 +55,7 @@ function logPrice(db, { kind, subject, name, oldValue, newValue, oldBasis = null
 // ---- Chicken products -------------------------------------------------------------------------
 
 export function listProducts(db, { includeInactive = false } = {}) {
-  const where = includeInactive ? '' : 'WHERE active = 1';
+  const where = includeInactive ? 'WHERE removed_at IS NULL' : 'WHERE active = 1 AND removed_at IS NULL';   // a removed product is on no list (Revision 21)
   const images = imageVersions(db, 'CHICKEN');
   return db.prepare(`SELECT * FROM products ${where} ORDER BY active DESC, name COLLATE NOCASE`).all().map((p) => shapeProduct(p, images));
 }
@@ -73,7 +79,7 @@ export function createProduct(db, user, body, now = new Date()) {
     const id = Number(r.lastInsertRowid);
     if (price > 0) logPrice(db, { kind: 'CHICKEN_PRICE', subject: productCode(id), name, oldValue: null, newValue: price, userId: user.id, now });
     return oneProduct(db, id);
-  }, 'product'));
+  }, 'product', db, name, 'products'));
 }
 
 export function updateProduct(db, user, id, body, now = new Date()) {
@@ -122,7 +128,7 @@ const shapeOther = (p, options, images = new Map()) => ({
 
 /** For the cashier screen (default): active products that have at least one active, priced option. */
 export function listOtherProducts(db, { includeInactive = false } = {}) {
-  const products = db.prepare(`SELECT * FROM other_products ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY active DESC, name COLLATE NOCASE`).all();
+  const products = db.prepare(`SELECT * FROM other_products WHERE removed_at IS NULL ${includeInactive ? '' : 'AND active = 1'} ORDER BY active DESC, name COLLATE NOCASE`).all();
   const options = db.prepare('SELECT * FROM other_product_options ORDER BY id').all();
   const images = imageVersions(db, 'OTHER');
   const shaped = products.map((p) => shapeOther(p, options.filter((o) => o.product_id === p.id && (includeInactive || o.active)), images));
@@ -163,7 +169,7 @@ export function createOtherProduct(db, user, body, now = new Date()) {
       setOptionPrice(db, user, product, option, prices[option.unit], now);
     }
     return listOtherProducts(db, { includeInactive: true }).find((p) => p.id === id);
-  }, 'product'));
+  }, 'product', db, name, 'other_products'));
 }
 
 export function updateOtherProduct(db, user, id, body, now = new Date()) {
@@ -352,7 +358,7 @@ const shapeService = (s) => ({
 
 /** Every service in button order. The cashier gets only the active ones (includeInactive for the Products screen). */
 export function listServices(db, { includeInactive = false } = {}) {
-  return db.prepare(`SELECT * FROM services ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY sort, code`).all().map(shapeService);
+  return db.prepare(`SELECT * FROM services WHERE removed_at IS NULL ${includeInactive ? '' : 'AND active = 1'} ORDER BY sort, code`).all().map(shapeService);
 }
 
 const readFee = (body, current) => {
@@ -381,7 +387,7 @@ export function createService(db, user, body, now = new Date()) {
                 VALUES (?,?,?,?,?,?,?,?,1,?,0,?,?)`).run(code, label, clean(body.note, 80), body.kind, body.cut ?? 'NONE', fee.amount, fee.basis, clean(body.fee_name, 40) || label, sortNo, iso, iso);
     if (fee.amount > 0) logPrice(db, { kind: 'SERVICE_FEE', subject: code, name: label, oldValue: null, newValue: fee.amount, newBasis: fee.basis, userId: user.id, now });
     return shapeService(db.prepare('SELECT * FROM services WHERE code = ?').get(code));
-  }, 'service'));
+  }, 'service', db, label, 'services', 'label'));
 }
 
 /**
@@ -389,7 +395,9 @@ export function createService(db, user, body, now = new Date()) {
  * whole / sliced / Dukot) never changes: saved orders and the butcher depend on it. Live never has a fee.
  */
 export function updateService(db, user, code, body, now = new Date()) {
-  if (!isAdmin(user)) throw new HttpError(403, 'Only the admin can change a service.', 'FORBIDDEN');
+  // A manager may only show or hide a service (Deactivate / Reactivate); everything else is the admin's.
+  const hideOnly = Object.keys(body).every((k) => k === 'active');
+  if (!isAdmin(user) && !(hideOnly && ROLE_RANK[user.role] >= ROLE_RANK.manager)) throw new HttpError(403, 'Only the admin can change a service. A manager can show or hide it.', 'FORBIDDEN');
   return tx(db, () => duplicateGuard(() => {
     const s = db.prepare('SELECT * FROM services WHERE code = ?').get(code);
     if (!s) throw new HttpError(404, 'Service not found.', 'NOT_FOUND');

@@ -493,12 +493,12 @@ test('upgrade 7 -> 8: every order, payment, stock figure and price is kept exact
   const { dir, file } = makeVersion7Database();
   const seed = new DatabaseSync(file);
   const tables = ['users', 'products', 'service_fees', 'order_items', 'order_other_items', 'orders', 'payments', 'order_events', 'business_days', 'inventory_records', 'inventory_events', 'price_history', 'other_product_options'];
-  const dump = (d) => JSON.stringify(Object.fromEntries(tables.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ tracking_number: _t, service_code: _sc, service_label: _sl, ...row }) => row)])));   // orders.tracking_number is new in version 12 (empty for old orders)
+  const dump = (d) => JSON.stringify(Object.fromEntries(tables.map((t) => [t, d.prepare(`SELECT * FROM ${t} ORDER BY 1`).all().map(({ tracking_number: _t, service_code: _sc, service_label: _sl, removed_at: _ra, removed_by: _rb, purged: _pg, ...row }) => row)])));   // orders.tracking_number is new in version 12 (empty for old orders)
   const before = dump(seed);
   seed.close();
 
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);   // 7 -> 8 -> 9 (Revision 11) in one start
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 15);   // 7 -> 8 -> 9 (Revision 11) in one start
   // inventory_events gained two columns (empty for old rows); other_product_options is compared apart because new rows were added.
   // Version 9 added products.category and inventory_records.katay_milli; every other value is unchanged.
   const after = JSON.parse(dump(db));
@@ -562,7 +562,7 @@ test('upgrade 7 -> 8: if a step fails, nothing is half-changed - the file stays 
   check.close();
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v8-.*\.bak$/.test(f)), 'the safety copy was made before the first step');
   const fixed = openDb(file);                                          // the next start completes the upgrade
-  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 14);
+  assert.equal(fixed.prepare('PRAGMA user_version').get().user_version, 15);
   assert.equal(fixed.prepare('SELECT COUNT(*) AS n FROM order_items').get().n, 4);
   fixed.close();
 });

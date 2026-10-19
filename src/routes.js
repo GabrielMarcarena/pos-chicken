@@ -8,6 +8,7 @@ import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
   createOption, updateOption, getFeeConfig, updateFee, listServices, createService, updateService, listPriceHistory, setProductImage, removeProductImage, getProductImage,
 } from './services/catalog.js';
+import { removeItem, restoreItem, listRemoved, removableInfo } from './services/removal.js';
 import { createOrder, getOrder, listOrders, listBoard, listButcher, nextFreeTrackingNumber, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
 import { gatherDaily, buildDailyXlsx } from './services/dailyReport.js';
@@ -102,7 +103,13 @@ export function registerRoutes(r) {
   // Revision 19: every service with its own price; the admin adds, renames, prices and hides them.
   r.add('GET', '/api/services', 'manager', (ctx) => ({ services: listServices(ctx.db, { includeInactive: true }) }));
   r.add('POST', '/api/services', 'admin', (ctx) => created({ service: createService(ctx.db, ctx.user, ctx.body, ctx.now()) }));
-  r.add('PUT', '/api/services/:code', 'admin', (ctx) => ({ service: updateService(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
+  // A manager may show or hide a service (active only); name, note and fees stay with the admin (checked in updateService).
+  r.add('PUT', '/api/services/:code', 'manager', (ctx) => ({ service: updateService(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
+  // Revision 21: Remove (manager or admin), Restore and the Removed list (admin). kind is chicken, other or service; key is the id or service code.
+  r.add('GET', '/api/items/:kind/:key/removable', 'manager', (ctx) => removableInfo(ctx.db, ctx.user, ctx.params.kind, ctx.params.key, ctx.now()));
+  r.add('POST', '/api/items/:kind/:key/remove', 'manager', (ctx) => removeItem(ctx.db, ctx.user, ctx.params.kind, ctx.params.key, ctx.now()));
+  r.add('POST', '/api/items/:kind/:key/restore', 'admin', (ctx) => restoreItem(ctx.db, ctx.user, ctx.params.kind, ctx.params.key, ctx.now()));
+  r.add('GET', '/api/removed', 'admin', (ctx) => ({ removed: listRemoved(ctx.db, ctx.now()) }));
   r.add('PUT', '/api/service-fees/:code', 'admin', (ctx) => ({ fees: updateFee(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
   r.add('GET', '/api/price-history', 'admin', (ctx) => ({ history: listPriceHistory(ctx.db) }));
 

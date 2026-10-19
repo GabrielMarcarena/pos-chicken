@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS products (
   updated_at TEXT NOT NULL,
   -- Which block of the paper Daily Sales Report the product is reported in (version 9). Set on the Products screen.
   category TEXT NOT NULL DEFAULT 'OTHER' CHECK (category IN ('BCULL','CULL','BROILER','OTHER')),
+  removed_at TEXT, removed_by INTEGER, purged INTEGER NOT NULL DEFAULT 0 CHECK (purged IN (0,1)),   -- Revision 21: Remove (restorable for 7 days)
   CHECK (active = 0 OR price_per_kg_centavos > 0)
 );
 
@@ -174,7 +175,8 @@ CREATE TABLE IF NOT EXISTS other_products (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   -- EGGS are counted in piece, carton and tray; every other product in piece, pack, sack and kg (version 8).
-  kind TEXT NOT NULL DEFAULT 'OTHER' CHECK (kind IN ('EGGS','OTHER'))
+  kind TEXT NOT NULL DEFAULT 'OTHER' CHECK (kind IN ('EGGS','OTHER')),
+  removed_at TEXT, removed_by INTEGER, purged INTEGER NOT NULL DEFAULT 0 CHECK (purged IN (0,1))   -- Revision 21
 );
 CREATE TABLE IF NOT EXISTS other_product_options (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +217,7 @@ CREATE TABLE IF NOT EXISTS services (
   builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0,1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  removed_at TEXT, removed_by INTEGER, purged INTEGER NOT NULL DEFAULT 0 CHECK (purged IN (0,1)),   -- Revision 21
   CHECK (kind <> 'LIVE' OR (cut = 'NONE' AND fee_centavos = 0))
 );
 CREATE TRIGGER IF NOT EXISTS services_no_delete BEFORE DELETE ON services
@@ -549,7 +552,7 @@ WHEN (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be deleted'); END;
 `;
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 /** One safety copy of the file per start, taken just before the first upgrade step runs. */
 function makeBackup(db, file) {
@@ -926,6 +929,23 @@ function migrateTo14(db, backup) {
   });
 }
 
+/**
+ * Version 14 -> 15 (Revision 21). Products, other products and services can be Removed (hidden from every list, restorable by the admin for
+ * 7 days): three empty columns on each table. The services table is made by the schema step for a database older than 14, so it is only
+ * altered here when it already exists. Nothing is rewritten.
+ */
+function migrateTo15(db, backup) {
+  backup('v15');
+  upgrade(db, 15, () => {
+    for (const table of ['products', 'other_products', 'services']) {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
+      if (!hasColumn(db, table, 'removed_at')) db.exec(`ALTER TABLE ${table} ADD COLUMN removed_at TEXT`);
+      if (!hasColumn(db, table, 'removed_by')) db.exec(`ALTER TABLE ${table} ADD COLUMN removed_by INTEGER`);
+      if (!hasColumn(db, table, 'purged')) db.exec(`ALTER TABLE ${table} ADD COLUMN purged INTEGER NOT NULL DEFAULT 0 CHECK (purged IN (0,1))`);
+    }
+  });
+}
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
@@ -952,6 +972,7 @@ export function openDb(file) {
     if (version < 12) migrateTo12(db, backup);
     if (version < 13) migrateTo13(db, backup);
     if (version < 14) migrateTo14(db, backup);
+    if (version < 15) migrateTo15(db, backup);
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);

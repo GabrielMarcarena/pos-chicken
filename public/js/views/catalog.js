@@ -29,6 +29,77 @@ export async function mountCatalog(root) {
 
 const reload = async () => { await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
 
+// ---- Deactivate or Remove (Revision 21) ----------------------------------------------------------
+// Every row can be deactivated (hidden, comes back with Reactivate) or removed (off every list; the admin can restore it for 7 days).
+// Chicken products, egg products and the built-in services are main items: they can only be deactivated. An other product can be
+// removed only while its Daily Inventory is empty. The server decides; the box shows its reason.
+
+const KIND_NAME = { chicken: 'chicken product', other: 'product', service: 'service' };
+/** Can this item ever be removed (the server also checks the stock)? Used only to decide whether to show a Remove button. */
+const removableKind = (kind, item) => kind === 'other' ? item.kind !== 'EGGS' : kind === 'service' ? !item.builtin : false;
+
+/**
+ * The Deactivate box: two choices. mode 'remove' asks only about removing (for an item that is already deactivated).
+ * Returns 'deactivated', 'removed' or false.
+ */
+async function deactivateDialog({ kind, key, name, mode = 'choose' }) {
+  let info;
+  try { info = await api('GET', `/api/items/${kind}/${encodeURIComponent(key)}/removable`); } catch (err) { toast(err.message, 'error'); return false; }
+  const can = info.removable;
+  const removeText = `Take ${esc(name)} off every list. The admin can restore it for 7 days, then it is gone for good. Orders already sold keep its name and price.`;
+  const choices = [
+    ...(mode === 'remove' ? [] : [`<label class="choice-row"><input type="radio" name="dChoice" value="deactivate" checked>
+        <span><strong>Deactivate</strong><br><span class="muted">Hide it from New order. You can turn it back on any time.</span></span></label>`]),
+    `<label class="choice-row ${can ? '' : 'muted'}"><input type="radio" name="dChoice" value="remove" ${can ? (mode === 'remove' ? 'checked' : '') : 'disabled'}>
+        <span><strong>Remove</strong><br><span class="muted">${can ? removeText : esc(info.reason)}</span></span></label>`,
+  ].join('');
+  const result = await openDialog({
+    title: mode === 'remove' ? `Remove ${name}?` : `Deactivate or remove ${name}?`,
+    body: `<div id="dErr"></div><div class="choice-rows">${choices}</div>`,
+    actions: [
+      { label: 'Cancel', value: false },
+      {
+        label: mode === 'remove' ? 'Remove' : 'Continue', kind: 'primary',
+        onClick: async (dlg) => {
+          const pick = dlg.querySelector('input[name="dChoice"]:checked')?.value;
+          if (!pick) { $('#dErr', dlg).innerHTML = errorBox({ message: 'Choose Deactivate or Remove.' }); return false; }
+          try {
+            if (pick === 'remove') { await api('POST', `/api/items/${kind}/${encodeURIComponent(key)}/remove`); return 'removed'; }
+            await setActive(kind, key, false);
+            return 'deactivated';
+          } catch (err) { $('#dErr', dlg).innerHTML = errorBox(err); return false; }
+        },
+      },
+    ],
+  });
+  if (result === 'removed') toast(`${name} removed. The admin can restore it for 7 days.`, 'ok');
+  if (result === 'deactivated') toast(`${name} deactivated.`, 'ok');
+  return result || false;
+}
+
+const setActive = (kind, key, active) => (kind === 'chicken' ? api('PATCH', `/api/products/${key}`, { active })
+  : kind === 'other' ? api('PATCH', `/api/other-products/${key}`, { active }) : api('PUT', `/api/services/${encodeURIComponent(key)}`, { active }));
+
+/** The admin's Removed list for one kind: what can still be restored, with the days left. */
+async function removedList(container, kind, onRestored) {
+  if (!isAdmin()) return;
+  let removed;
+  try { removed = (await api('GET', '/api/removed')).removed.filter((r) => r.kind === kind); } catch { return; }
+  if (!removed.length) return;
+  container.insertAdjacentHTML('beforeend', `<details class="how mt-m" id="removedBox"><summary>Removed (${removed.length})</summary>
+    <div class="table-wrap mt-s"><table class="data"><thead><tr><th>Name</th><th>Removed</th><th>Time left</th><th></th></tr></thead><tbody>
+    ${removed.map((r) => `<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(fmtDateTime(r.removed_at))}${r.removed_by ? ` by ${esc(r.removed_by)}` : ''}</td>
+      <td>${r.days_left} day${r.days_left === 1 ? '' : 's'} to restore</td>
+      <td class="right"><button type="button" class="btn btn--small" data-restore="${esc(r.key)}">Restore</button></td></tr>`).join('')}
+    </tbody></table></div><p class="hint">A restored item comes back deactivated. Press Reactivate to sell it again.</p></details>`);
+  $('#removedBox', container).onclick = async (e) => {
+    const btn = e.target.closest('[data-restore]');
+    if (!btn) return;
+    try { await api('POST', `/api/items/${kind}/${encodeURIComponent(btn.dataset.restore)}/restore`); toast('Restored. It is deactivated; press Reactivate to sell it again.', 'ok'); onRestored(); }
+    catch (err) { toast(err.message, 'error'); }
+  };
+}
+
 // ---- Chicken products ----------------------------------------------------------------------------
 
 async function chickenTab(body) {
@@ -57,7 +128,8 @@ async function chickenTab(body) {
     if (pic) return pictureDialog('chicken', products.find((p) => p.id === Number(pic.dataset.picture)));
     if (toggle) {
       const p = products.find((x) => x.id === Number(toggle.dataset.toggle));
-      try { await api('PATCH', `/api/products/${p.id}`, { active: !p.active }); toast(`${p.name} ${p.active ? 'deactivated' : 'reactivated'}.`, 'ok'); reload(); }
+      if (p.active) { if (await deactivateDialog({ kind: 'chicken', key: p.id, name: p.name })) reload(); return; }
+      try { await api('PATCH', `/api/products/${p.id}`, { active: true }); toast(`${p.name} reactivated.`, 'ok'); reload(); }
       catch (err) { toast(err.message, 'error'); }
     }
   };
@@ -122,8 +194,10 @@ async function otherTab(body) {
         <td class="right nowrap"><button type="button" class="btn btn--small btn--primary" data-options="${p.id}">Units &amp; prices</button>
           <button type="button" class="btn btn--small" data-picture="${p.id}">Picture</button>
           <button type="button" class="btn btn--small" data-rename="${p.id}">Rename</button>
-          <button type="button" class="btn btn--small" data-toggle="${p.id}">${p.active ? 'Deactivate' : 'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div>`
+          <button type="button" class="btn btn--small" data-toggle="${p.id}">${p.active ? 'Deactivate' : 'Reactivate'}</button>
+          ${!p.active && removableKind('other', p) ? `<button type="button" class="btn btn--small btn--danger" data-remove="${p.id}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty mt-s">No other products yet. Add things like eggs, etag or garlic.</div>'}`;
+  removedList(body, 'other', reload);
   $('#addOther').onclick = async () => {
     const created = await addOtherDialog();
     if (created) {
@@ -136,9 +210,11 @@ async function otherTab(body) {
     if (e.target.closest('[data-options]')) return optionsDialog(find('data-options').id);
     if (e.target.closest('[data-picture]')) return pictureDialog('other', find('data-picture'));
     if (e.target.closest('[data-rename]')) { const p = find('data-rename'); const done = await renameDialog(p); if (done) reload(); return; }
+    if (e.target.closest('[data-remove]')) { const p = find('data-remove'); if (await deactivateDialog({ kind: 'other', key: p.id, name: p.name, mode: 'remove' })) reload(); return; }
     if (e.target.closest('[data-toggle]')) {
       const p = find('data-toggle');
-      try { await api('PATCH', `/api/other-products/${p.id}`, { active: !p.active }); toast(`${p.name} ${p.active ? 'deactivated' : 'reactivated'}.`, 'ok'); reload(); }
+      if (p.active) { if (await deactivateDialog({ kind: 'other', key: p.id, name: p.name })) reload(); return; }
+      try { await api('PATCH', `/api/other-products/${p.id}`, { active: true }); toast(`${p.name} reactivated.`, 'ok'); reload(); }
       catch (err) { toast(err.message, 'error'); }
     }
   };
@@ -346,24 +422,44 @@ async function feesTab(body) {
   const { services } = await api('GET', '/api/services');
   const admin = isAdmin();
   // Live never has a fee, so it is not listed. Every other service has its own row, in the order the cashier sees them.
+  // A manager or the admin can Deactivate (or Remove an added service); only the admin changes fees and names.
   const rows = services.filter((s) => s.kind !== 'LIVE').map((s) => {
     const name = `<strong>${esc(s.label)}</strong>${s.builtin ? '' : ' <span class="muted">(added)</span>'}${s.active ? '' : ' <span class="chip">hidden</span>'}`;
+    const power = `<button type="button" class="btn btn--small" data-toggle="${esc(s.code)}">${s.active ? 'Deactivate' : 'Reactivate'}</button>
+      ${!s.active && removableKind('service', s) ? `<button type="button" class="btn btn--small btn--danger" data-remove="${esc(s.code)}">Remove</button>` : ''}`;
     return admin
       ? `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td>
           <td><input type="text" inputmode="decimal" aria-label="${esc(s.label)} fee in pesos" data-fee="${esc(s.code)}" value="${esc(pesoInput(s.fee_centavos) || '0')}"></td>
           <td><select aria-label="${esc(s.label)} fee basis" data-basis="${esc(s.code)}">${FEE_BASIS.map((b) => `<option value="${b}" ${s.fee_basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select></td>
-          <td class="right"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
-            <button type="button" class="btn btn--small" data-edit="${esc(s.code)}">Edit</button></td></tr>`
-      : `<tr class="${s.active ? '' : 'muted'}"><td>${name}</td><td>${formatPeso(s.fee_centavos)}</td><td>${FEE_BASIS_LABELS[s.fee_basis]}</td><td></td></tr>`;
+          <td class="right nowrap"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
+            <button type="button" class="btn btn--small" data-edit="${esc(s.code)}">Edit</button> ${power}</td></tr>`
+      : `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td><td>${formatPeso(s.fee_centavos)}</td><td>${FEE_BASIS_LABELS[s.fee_basis]}</td><td class="right nowrap">${power}</td></tr>`;
   });
   body.innerHTML = `
-    <div class="note-box">These are charged on top of the chicken price. <strong>Live</strong> never has a fee. Each service has its own fee, the same one the cashier sees on New order. <strong>With Blood</strong> has no fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight.' : 'Only the admin can change these.'}</div>
+    <div class="note-box">These are charged on top of the chicken price. <strong>Live</strong> never has a fee. Each service has its own fee, the same one the cashier sees on New order. <strong>With Blood</strong> has no fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight.' : 'Only the admin can change the fees. You can deactivate a service.'}</div>
     ${admin ? '<div class="mt-s"><button type="button" class="btn btn--primary" data-add="1">+ Add service</button></div>' : ''}
     <div id="feeMsg"></div>
     <div class="table-wrap mt-s"><table class="data"><thead><tr><th>Service</th><th>Fee (₱)</th><th>Charged</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
-  if (!admin) return;
+  removedList(body, 'service', () => mountCatalog($('#main')));
+  const refresh = async () => { await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
   body.onclick = async (e) => {
     try {
+      const toggle = e.target.closest('[data-toggle]');
+      if (toggle) {
+        const s = services.find((x) => x.code === toggle.dataset.toggle);
+        if (s.active) { if (await deactivateDialog({ kind: 'service', key: s.code, name: s.label })) await refresh(); return; }
+        await setActive('service', s.code, true);
+        toast(`${s.label} reactivated.`, 'ok');
+        await refresh();
+        return;
+      }
+      const remove = e.target.closest('[data-remove]');
+      if (remove) {
+        const s = services.find((x) => x.code === remove.dataset.remove);
+        if (await deactivateDialog({ kind: 'service', key: s.code, name: s.label, mode: 'remove' })) await refresh();
+        return;
+      }
+      if (!admin) return;
       if (e.target.closest('[data-add]')) { await serviceDialog(); return; }
       const edit = e.target.closest('[data-edit]');
       if (edit) { await editServiceDialog(services.find((s) => s.code === edit.dataset.edit)); return; }
@@ -379,15 +475,13 @@ async function feesTab(body) {
   };
 }
 
-/** Edit: rename a service, change the small note under its button, or hide it from New order (it is never deleted, so old orders keep it). */
+/** Edit: rename a service or change the small note under its button. (Hiding or removing is the Deactivate button on the row.) */
 async function editServiceDialog(s) {
   const saved = await openDialog({
     title: `Edit ${s.label}`,
     body: `<div id="eErr"></div><div class="form-grid">
         <div class="field"><label for="eLabel">Name (the button on New order)</label><input id="eLabel" type="text" maxlength="40" value="${esc(s.label)}"></div>
         <div class="field"><label for="eNote">Short note <span class="muted">(optional)</span></label><input id="eNote" type="text" maxlength="80" value="${esc(s.note)}"></div>
-        <div class="field"><label><input id="eShown" type="checkbox" ${s.active ? 'checked' : ''}> Show on New order</label>
-          <span class="hint">Untick to hide it. Orders already sold with it keep its name.</span></div>
         <div class="field"><span class="hint">${esc(serviceAbout(s))}. This part cannot be changed; to make a different kind, add a new service.</span></div>
       </div>`,
     actions: [
@@ -396,7 +490,7 @@ async function editServiceDialog(s) {
         label: 'Save changes', kind: 'primary',
         onClick: async (dlg) => {
           try {
-            await api('PUT', `/api/services/${s.code}`, { label: $('#eLabel', dlg).value, note: $('#eNote', dlg).value, active: $('#eShown', dlg).checked });
+            await api('PUT', `/api/services/${s.code}`, { label: $('#eLabel', dlg).value, note: $('#eNote', dlg).value });
             return true;
           } catch (err) { $('#eErr', dlg).innerHTML = errorBox(err); return false; }
         },

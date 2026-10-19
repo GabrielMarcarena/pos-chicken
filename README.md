@@ -4,7 +4,21 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 20): the old Service fees look, with every service and Add service
+## What changed in this version (revision 21): Deactivate or Remove
+
+- **Every row** in Products (Chicken products, Other products, Service fees) has a **Deactivate** button for a **manager or the admin**. It opens a box with two choices:
+  - **Deactivate:** hide it from New order; **Reactivate** brings it back any time.
+  - **Remove:** take it off every list. The admin can **restore** it from the **Removed** list for **7 days**; after that it is gone for good.
+- **Main items are never removed, only deactivated:** every chicken product, every egg product, and the seven built-in services (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot). Their Remove choice is greyed out and says why.
+- **Remove is for other products (not eggs) and for services you added.** An other product can be removed **only while its Daily Inventory is empty** (every unit at 0); otherwise it says how much is left.
+- **Orders already sold never change.** Each line keeps its own name, service name and price. A removed item leaves Products, New order and the Daily Inventory. (If it was sold today, today's inventory row stays so the day still adds up, and is gone from tomorrow.)
+- **Restore (admin only)** brings an item back **deactivated**; press Reactivate to sell it again. After 7 days an item that was never used is deleted; one that appears in old records is kept out of sight for those records and renamed "(removed date)", so the name can be used again. This clean-up runs when the app starts and every hour.
+- A **manager** can now Deactivate or Reactivate a service (before, only the admin could touch services); fees and names are still the admin's.
+- The **Edit** box of a service no longer has the "Show on New order" tick; use Deactivate on the row.
+- **Safe upgrade:** database version 14 → 15 with a safety copy (`pos.db.before-v15-<time>.bak`); three empty columns are added to products, other products and services, nothing is rewritten.
+- **Tests:** `npm test` runs 244 automated tests (8 new in `tests/revision21.test.js`); `npm run test:browser` runs 42 browser checks (7 new).
+
+## Earlier: revision 20: the old Service fees look, with every service and Add service
 
 - **Products, Service fees** keeps its old look (name in bold, Fee, Charged, Save), now with **one row for every paid service** the cashier sees on New order (Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot and any you add). Live never has a fee, so it is not listed.
 - **+ Add service** adds a new service (name, note, Pour or Dress, whole / sliced / Dukot, fee). It becomes a button on New order.

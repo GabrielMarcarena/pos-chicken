@@ -768,3 +768,10 @@ details.how--wide { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .feather, .hen-body, .feed, .crack { animation: none !important; } .crack { opacity: .8; } }
 @media print { #fun-layer { display: none !important; } }
+
+/* Revision 21: the Deactivate or Remove box */
+.choice-rows { display: grid; gap: 10px; }
+.choice-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 2px solid var(--line); border-radius: 12px; cursor: pointer; }
+.choice-row:has(input:checked) { border-color: var(--pine); background: var(--pine-tint); }
+.choice-row input { margin-top: 4px; width: 20px; height: 20px; }
+.choice-row.muted { cursor: not-allowed; opacity: .75; }

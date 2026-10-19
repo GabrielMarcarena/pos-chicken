@@ -133,10 +133,13 @@ await check('hiding Deboned removes the button; the sold order still shows its n
   await owner.click('[data-edit="SVC_1"]');
   await owner.waitForSelector('#eLabel');
   await owner.fill('#eLabel', 'Deboned Plus');
-  await owner.uncheck('#eShown');
   await owner.screenshot({ path: SHOTS + '/r19-5-edit.png' });
   await owner.click('dialog button:has-text("Save changes")');
-  await owner.waitForFunction(() => /Deboned Plus[\s\S]*hidden/.test(document.querySelector('[data-row="SVC_1"]')?.innerText ?? ''));
+  await owner.waitForFunction(() => /Deboned Plus/.test(document.querySelector('[data-row="SVC_1"]')?.innerText ?? ''));
+  await owner.click('[data-toggle="SVC_1"]');   // Deactivate (Revision 21: the box with two choices; Deactivate is the default)
+  await owner.waitForSelector('input[name="dChoice"][value="deactivate"]');
+  await owner.click('dialog button:has-text("Continue")');
+  await owner.waitForFunction(() => /hidden/.test(document.querySelector('[data-row="SVC_1"]')?.innerText ?? ''));
   await cash.reload();
   await cash.waitForSelector('.product-card');
   await cash.click('.product-card:has-text("Broilers")');
