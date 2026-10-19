@@ -337,15 +337,89 @@
       ]
     }
   ],
-  "fees": [
+  "services": [
+    {
+      "code": "LIVE",
+      "builtin": true,
+      "label": "Live",
+      "note": "Customer takes it alive",
+      "kind": "LIVE",
+      "cut": "NONE",
+      "fee_name": "Live",
+      "active": true,
+      "fee": null,
+      "basis": "per_head"
+    },
     {
       "code": "POUR",
-      "amount": "45.00",
+      "builtin": true,
+      "label": "Pour",
+      "note": "Burn chicken, whole (not cut)",
+      "kind": "POUR",
+      "cut": "NONE",
+      "fee_name": "Pour",
+      "active": true,
+      "fee": "45.00",
       "basis": "per_head"
     },
     {
       "code": "NOT_POUR",
-      "amount": "25.00",
+      "builtin": true,
+      "label": "Dress",
+      "note": "Dress chicken, whole (not cut)",
+      "kind": "NOT_POUR",
+      "cut": "NONE",
+      "fee_name": "Dress",
+      "active": true,
+      "fee": "25.00",
+      "basis": "per_head"
+    },
+    {
+      "code": "POUR_SLICE",
+      "builtin": true,
+      "label": "Po-ur & Slice",
+      "note": "Burn chicken, then slice",
+      "kind": "POUR",
+      "cut": "SLICE",
+      "fee_name": "Pour",
+      "active": true,
+      "fee": "45.00",
+      "basis": "per_head"
+    },
+    {
+      "code": "NOT_POUR_SLICE",
+      "builtin": true,
+      "label": "Dress & Slice",
+      "note": "Dress chicken, then slice",
+      "kind": "NOT_POUR",
+      "cut": "SLICE",
+      "fee_name": "Dress",
+      "active": true,
+      "fee": "25.00",
+      "basis": "per_head"
+    },
+    {
+      "code": "POUR_DUKOT",
+      "builtin": true,
+      "label": "Pour & Dukot",
+      "note": "Burn chicken, inside removed, not sliced",
+      "kind": "POUR",
+      "cut": "DUKOT",
+      "fee_name": "Pour",
+      "active": true,
+      "fee": "45.00",
+      "basis": "per_head"
+    },
+    {
+      "code": "NOT_POUR_DUKOT",
+      "builtin": true,
+      "label": "Dress & Dukot",
+      "note": "Dress chicken, inside removed, not sliced",
+      "kind": "NOT_POUR",
+      "cut": "DUKOT",
+      "fee_name": "Dress",
+      "active": true,
+      "fee": "25.00",
       "basis": "per_head"
     }
   ]

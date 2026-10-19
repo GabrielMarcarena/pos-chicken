@@ -1,16 +1,15 @@
 // Line and order totals. The server is the authority; the browser uses the same functions for the live preview.
 
 import { mulDivRound } from './money.js';
+import { serviceOf } from './rules.js';
 
 /**
- * Which paid services does this preparation use? Live uses none. Pour (burn) and Dress each carry their own fee, per head, whatever the
- * cutting is (whole, sliced or Dukot). With Blood (dara) and Dukot are no longer charged.
+ * Which paid service does this preparation use? Live uses none. Since Revision 19 every service has its own fee, found by the service
+ * code (a built-in or one the admin added). Older callers that only give feather + cut get the built-in service those mean.
  */
 export function serviceCodes(prep) {
-  const codes = [];
-  if (prep.feather === 'POUR') codes.push('POUR');
-  if (prep.feather === 'NOT_POUR') codes.push('NOT_POUR');
-  return codes;
+  if (prep.feather === 'POUR' || prep.feather === 'NOT_POUR') return [serviceOf(prep)];
+  return [];
 }
 
 /**
@@ -18,17 +17,19 @@ export function serviceCodes(prep) {
  *   weight charge = price per kg x live weight (rounded half up to the centavo)
  *   each service fee = flat amount, or rate per kg x live weight (rounded half up)
  *   line total = weight charge + service fees
- * fees looks like { POUR: { amount: 4500, basis: 'per_item' }, ... }; a missing fee counts as 0.
+ * fees looks like { POUR: { amount: 4500, basis: 'per_item', name: 'Pour' }, POUR_SLICE: {...}, ... }, one entry per service code. A fee for the
+ * line's service is used when there is one; otherwise the fee of its family (POUR or NOT_POUR, how it worked before revision 19); a missing fee counts as 0.
  *
  * heads is the number of chickens on the line. weightG is the TOTAL weight of all of them, weighed together, so the
  * weight charge never depends on heads. Only a fee set to "per head" is multiplied by heads.
  */
 export function chickenLine({ pricePerKgCentavos, weightG, heads = 1, prep, fees }) {
   const weightAmount = mulDivRound(pricePerKgCentavos, weightG, 1000);
-  const feeLines = serviceCodes(prep).map((code) => {
-    const fee = fees[code] ?? { amount: 0, basis: 'per_item' };
+  const feeLines = serviceCodes(prep).map((service) => {
+    const fee = fees[service] ?? fees[prep.feather] ?? { amount: 0, basis: 'per_item' };
     const amount = fee.basis === 'per_kg' ? mulDivRound(fee.amount, weightG, 1000) : fee.basis === 'per_head' ? fee.amount * heads : fee.amount;
-    return { code, amount, basis: fee.basis, rate: fee.amount };
+    // code stays the family (POUR / NOT_POUR) as before; service says which service charged it; label is the name on the receipt.
+    return { code: prep.feather, service, ...(fee.name ? { label: fee.name } : {}), amount, basis: fee.basis, rate: fee.amount };
   });
   const serviceFee = feeLines.reduce((sum, f) => sum + f.amount, 0);
   return { weightAmount, heads, fees: feeLines, serviceFee, lineTotal: weightAmount + serviceFee };

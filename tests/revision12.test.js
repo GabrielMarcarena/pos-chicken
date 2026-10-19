@@ -497,12 +497,12 @@ test('upgrade to version 10: a safety copy is made first, the data is unchanged,
   const before = JSON.stringify(first.prepare('SELECT * FROM products ORDER BY id').all());
   first.close();
   const db = openDb(file);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
   assert.equal(JSON.stringify(db.prepare('SELECT * FROM products ORDER BY id').all()), before, 'the data is unchanged');
   for (const t of ['ref_stock_entries', 'order_ref_items', 'cash_counts', 'expenses']) assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n, 0);
   assert.ok(fs.readdirSync(dir).some((f) => /\.before-v10-.*\.bak$/.test(f)), 'a safety copy was made first');
   db.close();
-  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 13, 'a second start changes nothing');
+  assert.equal(openDb(file).prepare('PRAGMA user_version').get().user_version, 14, 'a second start changes nothing');
   assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith('.bak')).length, 1, 'and makes no second copy');
   fs.rmSync(dir, { recursive: true, force: true });
 });

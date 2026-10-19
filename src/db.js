@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { toBusinessDate } from './time.js';
-import { UNITS } from '../shared/constants.js';
+import { UNITS, BUILTIN_SERVICES } from '../shared/constants.js';
 
 // Business days and the Daily Inventory. These tables are created both for a new install (below) and by the upgrade to version 7.
 //
@@ -118,6 +118,8 @@ const orderItemsTable = (name, ifNotExists = false) => `CREATE TABLE ${ifNotExis
   fee_detail TEXT NOT NULL DEFAULT '[]',
   service_fee_centavos INTEGER NOT NULL DEFAULT 0 CHECK (service_fee_centavos >= 0),
   line_total_centavos INTEGER NOT NULL CHECK (line_total_centavos >= 0),
+  service_code TEXT,    -- Revision 19: the service the cashier picked, and its name at that time (empty on older lines: worked out from feather + cut)
+  service_label TEXT,
   UNIQUE (order_id, line_no),
   -- A slice size exists if and only if the cutting method is Slice.
   CHECK ((cut_method = 'SLICE') = (slice_size IS NOT NULL)),
@@ -195,6 +197,28 @@ CREATE TABLE IF NOT EXISTS service_fees (
   basis TEXT NOT NULL DEFAULT 'per_item' CHECK (basis IN ('per_item','per_head','per_kg')),
   updated_at TEXT NOT NULL
 );
+
+-- Revision 19: the services the cashier can pick for a chicken line. The seven built-in ones always exist; the admin can add more, change a
+-- name or a price, and hide one. A service is never deleted, so old orders that used it keep reading correctly.
+--   kind = the family the butcher and the reports see (LIVE, POUR or NOT_POUR); cut = whole, sliced (asks a size) or Dukot.
+CREATE TABLE IF NOT EXISTS services (
+  code TEXT PRIMARY KEY,
+  label TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  note TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL CHECK (kind IN ('LIVE','POUR','NOT_POUR')),
+  cut TEXT NOT NULL DEFAULT 'NONE' CHECK (cut IN ('NONE','SLICE','DUKOT')),
+  fee_centavos INTEGER NOT NULL DEFAULT 0 CHECK (fee_centavos >= 0),
+  fee_basis TEXT NOT NULL DEFAULT 'per_head' CHECK (fee_basis IN ('per_item','per_head','per_kg')),
+  fee_name TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
+  sort INTEGER NOT NULL DEFAULT 0,
+  builtin INTEGER NOT NULL DEFAULT 0 CHECK (builtin IN (0,1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (kind <> 'LIVE' OR (cut = 'NONE' AND fee_centavos = 0))
+);
+CREATE TRIGGER IF NOT EXISTS services_no_delete BEFORE DELETE ON services
+BEGIN SELECT RAISE(ABORT, 'a service cannot be deleted; hide it instead'); END;
 
 CREATE TABLE IF NOT EXISTS price_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -525,7 +549,7 @@ WHEN (SELECT status FROM business_days WHERE id = OLD.business_day_id) <> 'OPEN'
 BEGIN SELECT RAISE(ABORT, 'the saved inventory of a closed day cannot be deleted'); END;
 `;
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 /** One safety copy of the file per start, taken just before the first upgrade step runs. */
 function makeBackup(db, file) {
@@ -889,6 +913,19 @@ function migrateTo13(db, backup) {
   }
 }
 
+/**
+ * Version 13 -> 14 (Revision 19). Services become data: the services table is made by the schema step and seeded below (each Pour-type service
+ * starts with the Pour fee and each Dress-type service with the Dress fee, so every price stays what it was). order_items gets two empty
+ * columns (service_code, service_label); older lines keep them empty and are read as before.
+ */
+function migrateTo14(db, backup) {
+  backup('v14');
+  upgrade(db, 14, () => {
+    if (!hasColumn(db, 'order_items', 'service_code')) db.exec('ALTER TABLE order_items ADD COLUMN service_code TEXT');
+    if (!hasColumn(db, 'order_items', 'service_label')) db.exec('ALTER TABLE order_items ADD COLUMN service_label TEXT');
+  });
+}
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
@@ -914,6 +951,7 @@ export function openDb(file) {
     if (version < 11) migrateTo11(db, backup);
     if (version < 12) migrateTo12(db, backup);
     if (version < 13) migrateTo13(db, backup);
+    if (version < 14) migrateTo14(db, backup);
   }
   db.exec(SCHEMA);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -921,6 +959,15 @@ export function openDb(file) {
   // New installs charge Pour and Dress per head (3 heads x the fee). The admin can change this per service.
   const seed = db.prepare('INSERT OR IGNORE INTO service_fees (code, amount_centavos, basis, updated_at) VALUES (?, 0, ?, ?)');
   for (const code of ['POUR', 'NOT_POUR']) seed.run(code, 'per_head', now);   // With Blood and Dukot have no fee any more
+  // Revision 19: the seven built-in services (only added when missing, so the admin's later changes are never overwritten). A Pour-type service
+  // starts with the Pour fee and a Dress-type one with the Dress fee, so prices do not change when an older database is upgraded.
+  const familyFee = db.prepare('SELECT amount_centavos, basis FROM service_fees WHERE code = ?');
+  const addService = db.prepare(`INSERT OR IGNORE INTO services (code, label, note, kind, cut, fee_centavos, fee_basis, fee_name, active, sort, builtin, created_at, updated_at)
+                                 VALUES (?,?,?,?,?,?,?,?,1,?,1,?,?)`);
+  BUILTIN_SERVICES.forEach((d, n) => {
+    const fee = d.kind === 'LIVE' ? { amount_centavos: 0, basis: 'per_head' } : familyFee.get(d.kind);
+    addService.run(d.code, d.label, d.note, d.kind, d.cut, fee.amount_centavos, fee.basis, d.fee_name, n + 1, now, now);
+  });
   return db;
 }
 
