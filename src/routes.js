@@ -6,7 +6,7 @@ import {
 } from './services/users.js';
 import {
   listProducts, createProduct, updateProduct, listOtherProducts, createOtherProduct, updateOtherProduct,
-  createOption, updateOption, getFeeConfig, updateFee, listPriceHistory, setProductImage, removeProductImage, getProductImage,
+  createOption, updateOption, getFeeConfig, updateFee, listServices, createService, updateService, listPriceHistory, setProductImage, removeProductImage, getProductImage,
 } from './services/catalog.js';
 import { createOrder, getOrder, listOrders, listBoard, listButcher, nextFreeTrackingNumber, moveOrder, setBookmark, cancelOrder, changeOrder, refundOrder } from './services/orders.js';
 import { gatherExport, buildXlsx, buildCsv, buildSalesListXlsx } from './services/export.js';
@@ -67,6 +67,7 @@ export function registerRoutes(r) {
   // Everything the checkout screen needs in one call.
   r.add('GET', '/api/config', 'cashier', (ctx) => ({
     fees: getFeeConfig(ctx.db),
+    services: listServices(ctx.db),   // Revision 19: the buttons of the service choice, each with its own fee
     reasons: REASONS,
     payment_methods: PAYMENT_METHODS,
     discount_reasons: DISCOUNT_REASONS,
@@ -98,6 +99,10 @@ export function registerRoutes(r) {
   r.add('PUT', '/api/product-images/:kind/:id', 'manager', (ctx) => setProductImage(ctx.db, ctx.user, ctx.params.kind, idParam(ctx), ctx.body, ctx.now()));
   r.add('DELETE', '/api/product-images/:kind/:id', 'manager', (ctx) => removeProductImage(ctx.db, ctx.user, ctx.params.kind, idParam(ctx)));
   r.add('GET', '/api/service-fees', 'manager', (ctx) => ({ fees: getFeeConfig(ctx.db) }));
+  // Revision 19: every service with its own price; the admin adds, renames, prices and hides them.
+  r.add('GET', '/api/services', 'manager', (ctx) => ({ services: listServices(ctx.db, { includeInactive: true }) }));
+  r.add('POST', '/api/services', 'admin', (ctx) => created({ service: createService(ctx.db, ctx.user, ctx.body, ctx.now()) }));
+  r.add('PUT', '/api/services/:code', 'admin', (ctx) => ({ service: updateService(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
   r.add('PUT', '/api/service-fees/:code', 'admin', (ctx) => ({ fees: updateFee(ctx.db, ctx.user, ctx.params.code, ctx.body, ctx.now()) }));
   r.add('GET', '/api/price-history', 'admin', (ctx) => ({ history: listPriceHistory(ctx.db) }));
 

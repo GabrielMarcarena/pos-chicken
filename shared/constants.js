@@ -52,6 +52,17 @@ export const SERVICE_NOTES = {
   NOT_POUR_DUKOT: 'Dress chicken, inside removed, not sliced',
 };
 
+// Revision 19: the services are data now (the services table), but these seven always exist. Used to seed a new database, as the fallback
+// label for old order lines, and by the browser before the list has loaded. kind = the family the butcher and the reports see (LIVE, POUR or
+// NOT_POUR); cut = NONE (whole), SLICE (asks a slice size) or DUKOT; fee_name = the name on the fee line of a receipt.
+export const BUILTIN_SERVICES = SERVICES.map((code) => {
+  const kind = code === 'LIVE' ? 'LIVE' : code.startsWith('POUR') ? 'POUR' : 'NOT_POUR';
+  return {
+    code, kind, cut: code.endsWith('_SLICE') ? 'SLICE' : code.endsWith('_DUKOT') ? 'DUKOT' : 'NONE',
+    label: SERVICE_LABELS[code], note: SERVICE_NOTES[code], fee_name: kind === 'POUR' ? 'Pour' : kind === 'NOT_POUR' ? 'Dress' : '',
+  };
+});
+
 // Names used where fees are listed (settings, order slip chips, spreadsheet). DARA and DUKOT are kept only so that
 // orders saved before revision 10, which were charged those fees, still read correctly.
 export const FEE_LABELS = {

@@ -117,7 +117,7 @@ export function orderStatusBadges(o) {
 /** Plain text list of the preparation chosen on a chicken line: the service (Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot, Dress & Dukot), With Blood, then the slice size. */
 export function prepChips(prep) {
   const chips = [];
-  const service = serviceLabel({ feather: prep.feather, cut: prep.cut });
+  const service = prep.service_label || serviceLabel({ feather: prep.feather, cut: prep.cut });   // the name saved on the line (or chosen now) wins; older lines are worked out from feather + cut
   if (service) chips.push(service);
   if (prep.dara) chips.push(label('DARA'));
   if (prep.cut === 'SLICE') chips.push(label(prep.sliceSize ?? prep.slice_size));
