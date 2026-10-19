@@ -1,9 +1,11 @@
 // Start the POS server:  npm start
+import fs from 'node:fs';
 import { loadConfig } from './src/config.js';
 import { openDb } from './src/db.js';
 import { createApp } from './src/app.js';
 import { bootstrapAdmin } from './src/services/users.js';
 import { seedStarterCatalog, seedRevision11Products } from './src/services/catalog.js';
+import { importSetup } from './src/services/setupData.js';
 import { inventoryDir } from './src/services/inventory.js';
 import { midnightClose } from './src/services/inventoryReport.js';
 
@@ -29,6 +31,17 @@ if (seedStarterCatalog(db)) console.log('Added the starter service prices and ot
 // Revision 11, once: Brown Cull Chicken, Ducks and Catfish, without prices (the admin sets them in Products).
 const added = seedRevision11Products(db);
 if (added.length) console.log(`Added ${added.join(', ')}. They stay hidden from the cashier until the admin sets their prices in Products.`);
+
+// Revision 18: a hosted copy can start with this shop's products and prices (SETUP_FILE=deploy/setup.json). Once per database.
+if (config.setupFile) {
+  try {
+    const admin = db.prepare("SELECT * FROM users WHERE role = 'admin' AND active = 1 AND deleted_at IS NULL ORDER BY id LIMIT 1").get();
+    const done = admin ? importSetup(db, admin, JSON.parse(fs.readFileSync(config.setupFile, 'utf8'))) : null;
+    if (done) console.log(`Loaded the setup from ${config.setupFile}: ${done.chicken} chicken product(s), ${done.other} other product(s), ${done.fees} fee(s).`);
+  } catch (err) {
+    console.error(`Could not load ${config.setupFile} (${err.message}). The app starts without it; add the products in Products.`);
+  }
+}
 
 // Revision 13: at midnight (PH time) the Daily Inventory saves and closes by itself, and the new day starts with yesterday's New Total.
 // Checked at start (the app may have been off overnight) and every minute after.

@@ -4,7 +4,15 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 17): ready to go online, records cleared, new browser tests
+## What changed in this version (revision 18): start a hosted copy with the shop's products
+
+- **`INVENTORY_DIR`** moves the saved daily inventory files (normally `backups/inventory`) onto a persistent disk, next to the database. Needed on a host such as Railway, where only the mounted disk survives a restart.
+- **`npm run export-setup`** writes `deploy/setup.json`: chicken products, other products with their ways of selling, prices and the service fees. It holds **no users, passwords or orders**, so it is safe to keep in the public repo.
+- **`SETUP_FILE=deploy/setup.json`** makes a brand-new database load that file once at start (through the normal product and price rules, so the price history records it). A restart never loads it again, so prices changed later are not overwritten.
+- Railway settings for a presentation copy: a Volume at `/data`, `DB_PATH=/data/pos.db`, `INVENTORY_DIR=/data/inventory`, `SETUP_FILE=deploy/setup.json`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `COOKIE_SECURE=true`, `TRUST_PROXY=1`, `TZ=Asia/Manila`.
+- **Tests:** `npm test` runs 227 automated tests (6 new in `tests/revision18.test.js`).
+
+## Earlier: revision 17: ready to go online, records cleared, new browser tests
 
 - **Going online.** A step-by-step guide for a free server (Oracle Cloud, Singapore), a free address (DuckDNS), the padlock (Caddy) and nightly backups to Google Drive: [docs/deploy/online-hosting-guide.md](docs/deploy/online-hosting-guide.md). The ready-made files are in `deploy/` (auto-start service, Caddy settings, daily backup, update and address scripts). New settings in `.env.example`: `HOST` (listen only on this computer, for use behind Caddy) and `TRUST_PROXY` (use each visitor's real address for the sign-in limit; off by default, so nobody can fake it). Without them the app behaves exactly as before in the shop.
 - **Clearing records now works on every table.** `npm run clear-records` failed since revision 16, because the new Cash on hand table pointed at the days it deletes. Fixed, with a test. New option `npm run clear-records -- --everything`: also deletes the open business day (every stock number, cash count, expense and cash on hand) and all sign-ins, and keeps users, products, prices and fees. The app opens a fresh day the first time someone uses it.
