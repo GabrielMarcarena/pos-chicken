@@ -13,7 +13,8 @@ const { loadConfig } = await import(path.join(root, 'src/config.js'));
 const { createUser } = await import(path.join(root, 'src/services/users.js'));
 const { createProduct, updateFee } = await import(path.join(root, 'src/services/catalog.js'));
 const { getInventory, updateRecord } = await import(path.join(root, 'src/services/inventory.js'));
-const { chromium } = createRequire(import.meta.url)('playwright');
+const req = createRequire(import.meta.url);
+const { chromium } = (() => { try { return req('playwright'); } catch { return req('playwright-core'); } })();   // npm install playwright (or playwright-core)
 const SHOTS = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-shots-'));
 
 const db = openDb(':memory:');
@@ -29,7 +30,7 @@ const server = createApp({ db, config: loadConfig({ dbPath: ':memory:' }) }).lis
 await new Promise((r) => server.once('listening', r));
 const base = 'http://127.0.0.1:' + server.address().port;
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(process.env.EXE ? { executablePath: process.env.EXE } : {});
 const out = [];
 const check = async (name, fn) => { try { await fn(); out.push('PASS ' + name); } catch (e) { out.push('FAIL ' + name + ' :: ' + String(e.message).split('\n').slice(0, 5).join(' | ')); } console.log(out.at(-1)); };
 const errs = [];
@@ -251,8 +252,9 @@ await check('the Pitik chicken: walks, pecks and cracks the screen (cracks fade)
   await p.waitForSelector('#fun-layer .crack', { state: 'attached', timeout: 25000 });
   assert.ok(await p.locator('#fun-layer .feed').count() >= 0);
   const op1 = Number(await p.locator('#fun-layer .crack').first().evaluate((e) => getComputedStyle(e).opacity));
-  await p.waitForSelector('.hen.looking', { state: 'attached', timeout: 30000 });
-  await p.waitForSelector('.hen.blink', { state: 'attached', timeout: 5000 });
+  // The look and the blink are short-lived classes, so a watcher records them instead of the test racing to catch the right instant.
+  await p.evaluate(() => { window.__henSeen = new Set(); new MutationObserver(() => { for (const c of ['looking', 'blink']) if (document.querySelector('.hen.' + c)) window.__henSeen.add(c); }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] }); });
+  await p.waitForFunction(() => window.__henSeen.has('looking') && window.__henSeen.has('blink'), null, { timeout: 40000 });
   await p.screenshot({ path: SHOTS + '/r16-9-chicken.png' });
   const op2 = Number(await p.locator('#fun-layer .crack').first().evaluate((e) => getComputedStyle(e).opacity));
   assert.ok(op2 < op1, 'a crack fades: ' + op1 + ' -> ' + op2);

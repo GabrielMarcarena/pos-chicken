@@ -312,7 +312,7 @@ test('upgrade to version 12: a safety copy first; old orders keep every value an
     first.close();
 
     const db = openDb(file);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
     assert.ok(fs.readdirSync(dir).some((f) => /\.before-v12-.*\.bak$/.test(f)), 'a safety copy was saved');
     const old = db.prepare("SELECT * FROM orders WHERE order_number = 'ORD-OLD-1'").get();
     assert.equal(old.tracking_number, null);
@@ -325,7 +325,7 @@ test('upgrade to version 12: a safety copy first; old orders keep every value an
     assert.equal(createUser(db, { username: 'butcher-tv', display_name: 'TV', role: 'display', password: 'tv-pass-12345' }).id, 8, 'the id counter carried over');
     assert.throws(() => db.prepare('UPDATE orders SET tracking_number = 3 WHERE id = ?').run(old.id), /cannot be changed/, 'the trigger was replaced');
     const again = openDb(file);
-    assert.equal(again.prepare('PRAGMA user_version').get().user_version, 13, 'a second start changes nothing');
+    assert.equal(again.prepare('PRAGMA user_version').get().user_version, 14, 'a second start changes nothing');
     again.close(); db.close();
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
