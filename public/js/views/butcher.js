@@ -74,7 +74,7 @@ const who = (o) => (o.customer_number && o.customer_number !== 'WALK-IN' ? o.cus
 const tag = (o) => (o.tracking_number == null ? '—' : o.tracking_number);
 
 function lineHtml(i) {
-  const prep = prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size, service_label: i.service_label });
+  const prep = prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size });
   const service = prep[0] ?? '';
   const extra = prep.slice(1);
   return `<li class="bt-line"><div class="bt-line-top"><span class="bt-prod">${esc(i.name)}</span>

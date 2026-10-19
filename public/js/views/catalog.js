@@ -1,15 +1,15 @@
-// Products screen: chicken products, other products, services and their fees (admin edits) and the price history (admin).
+// Products screen: chicken products, other products, service fees (admin edits) and the price history (admin).
 import { api } from '../api.js';
 import { state, refreshConfig } from '../state.js';
 import { $, esc, formatPeso, toast, errorBox, openDialog, fmtDateTime, productPicture, watchImages } from '../util.js';
-import { FEE_LABELS, SOLD_BY, FEE_BASIS, FEE_BASIS_LABELS, PRODUCT_KINDS, UNITS, CHICKEN_CATEGORIES, eggSizeOf } from '/shared/constants.js';
+import { SERVICE_CODES, FEE_LABELS, SOLD_BY, FEE_BASIS, FEE_BASIS_LABELS, PRODUCT_KINDS, UNITS, CHICKEN_CATEGORIES, eggSizeOf } from '/shared/constants.js';
 
 const isAdmin = () => state.user.role === 'admin';
 const pesoInput = (c) => (c ? `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}` : '');
 let tab = 'chicken';
 
 export async function mountCatalog(root) {
-  const tabs = [['chicken', 'Chicken products'], ['other', 'Other products'], ['fees', 'Services'], ...(isAdmin() ? [['history', 'Price history']] : [])];
+  const tabs = [['chicken', 'Chicken products'], ['other', 'Other products'], ['fees', 'Service fees'], ...(isAdmin() ? [['history', 'Price history']] : [])];
   root.innerHTML = `<div class="panel"><div class="panel-head"><h1>Products</h1></div>
     <div class="tabs" role="tablist">${tabs.map(([id, text]) => `<button type="button" class="tab" role="tab" aria-selected="${tab === id}" data-tab="${id}">${esc(text)}</button>`).join('')}</div>
     <div id="tabBody"></div></div>`;
@@ -334,89 +334,35 @@ async function pictureDialog(kind, product) {
   if (changed) { toast('Picture saved.', 'ok'); reload(); }
 }
 
-// ---- Services (Revision 19) ----------------------------------------------------------------------
-// Every service the cashier can pick has its own name, note and fee. The admin adds services, renames and prices them, and can hide
-// one (it is never deleted, so old orders keep reading correctly). Live never has a fee.
-
-const KIND_TEXT = { LIVE: 'Live chicken', POUR: 'Pour (burned)', NOT_POUR: 'Dress (dressed)' };
-const CUT_TEXT = { NONE: 'whole', SLICE: 'sliced, asks the size', DUKOT: 'Dukot' };
-const serviceAbout = (s) => (s.kind === 'LIVE' ? KIND_TEXT.LIVE : `${KIND_TEXT[s.kind]}, ${CUT_TEXT[s.cut]}`);
+// ---- Service fees --------------------------------------------------------------------------------
 
 async function feesTab(body) {
-  const { services } = await api('GET', '/api/services');
-  const admin = isAdmin();
-  const rows = services.map((s) => {
-    const free = s.kind === 'LIVE';
-    if (!admin) {
-      return `<tr class="${s.active ? '' : 'muted'}"><td><strong>${esc(s.label)}</strong>${s.active ? '' : ' <span class="chip">hidden</span>'}<div class="hint">${esc(serviceAbout(s))}</div></td>
-        <td>${free ? 'No fee' : formatPeso(s.fee_centavos)}</td><td>${free ? '' : FEE_BASIS_LABELS[s.fee_basis]}</td><td></td></tr>`;
-    }
-    return `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}">
-      <td><input type="text" maxlength="40" aria-label="Name of ${esc(s.label)}" data-f="label" value="${esc(s.label)}">
-        <input type="text" maxlength="80" class="mt-s" aria-label="Note under ${esc(s.label)}" data-f="note" placeholder="Short note under the button" value="${esc(s.note)}">
-        <div class="hint">${esc(serviceAbout(s))}${s.builtin ? '' : ' · added by you'}${s.active ? '' : ' · <strong>hidden</strong>'}</div></td>
-      <td>${free ? '<span class="muted">No fee</span>' : `<input type="text" inputmode="decimal" aria-label="${esc(s.label)} fee in pesos" data-f="fee" value="${esc(pesoInput(s.fee_centavos) || '0')}">`}</td>
-      <td>${free ? '' : `<select aria-label="${esc(s.label)} fee basis" data-f="basis">${FEE_BASIS.map((b) => `<option value="${b}" ${s.fee_basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select>`}</td>
-      <td class="right"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
-        <button type="button" class="btn btn--small" data-toggle="${esc(s.code)}" data-active="${s.active ? 1 : 0}">${s.active ? 'Hide' : 'Show'}</button></td></tr>`;
+  const { fees } = await api('GET', '/api/service-fees');
+  const rows = SERVICE_CODES.map((code) => {
+    const f = fees[code];
+    return isAdmin()
+      ? `<tr><td><strong>${esc(FEE_LABELS[code])}</strong></td>
+          <td><input type="text" inputmode="decimal" aria-label="${esc(FEE_LABELS[code])} fee in pesos" data-fee="${code}" value="${esc(pesoInput(f.amount) || '0')}"></td>
+          <td><select aria-label="${esc(FEE_LABELS[code])} fee basis" data-basis="${code}">${FEE_BASIS.map((b) => `<option value="${b}" ${f.basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select></td>
+          <td class="right"><button type="button" class="btn btn--small btn--primary" data-save="${code}">Save</button></td></tr>`
+      : `<tr><td><strong>${esc(FEE_LABELS[code])}</strong></td><td>${formatPeso(f.amount)}</td><td>${FEE_BASIS_LABELS[f.basis]}</td><td></td></tr>`;
   });
   body.innerHTML = `
-    <div class="note-box">Each service has its own fee, charged on top of the chicken price. <strong>Live</strong> never has a fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight. <strong>Hide</strong> takes a service off the New order screen; old orders keep it.' : 'Only the admin can change these.'}</div>
-    ${admin ? '<div class="mt-s"><button type="button" class="btn btn--primary" data-add="1">+ Add service</button></div>' : ''}
+    <div class="note-box">These are charged on top of the chicken price. <strong>Live</strong> never has a fee. <strong>Pour</strong> and <strong>Dress</strong> each have one fee, and it is the same whether the chicken is left whole, sliced (Po-ur &amp; Slice, Dress &amp; Slice) or Dukot (Pour &amp; Dukot, Dress &amp; Dukot). <strong>With Blood</strong> and <strong>Dukot</strong> have no fee. ${isAdmin() ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight.' : 'Only the admin can change these.'}</div>
     <div id="feeMsg"></div>
     <div class="table-wrap mt-s"><table class="data"><thead><tr><th>Service</th><th>Fee (₱)</th><th>Charged</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
-  if (!admin) return;
-  const done = async (text) => { $('#feeMsg').innerHTML = ''; toast(text, 'ok'); await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
+  if (!isAdmin()) return;
   body.onclick = async (e) => {
+    const btn = e.target.closest('[data-save]');
+    if (!btn) return;
+    const code = btn.dataset.save;
     try {
-      if (e.target.closest('[data-add]')) { await serviceDialog(); return; }
-      const save = e.target.closest('[data-save]');
-      if (save) {
-        const row = save.closest('tr');
-        const f = (k) => row.querySelector(`[data-f="${k}"]`);
-        const payload = { label: f('label').value, note: f('note').value };
-        if (f('fee')) { payload.fee = f('fee').value; payload.basis = f('basis').value; }
-        await api('PUT', `/api/services/${save.dataset.save}`, payload);
-        await done(`${f('label').value.trim()} saved.`);
-        return;
-      }
-      const toggle = e.target.closest('[data-toggle]');
-      if (toggle) {
-        const hide = toggle.dataset.active === '1';
-        await api('PUT', `/api/services/${toggle.dataset.toggle}`, { active: !hide });
-        await done(hide ? 'Service hidden from New order.' : 'Service shown on New order.');
-      }
+      await api('PUT', `/api/service-fees/${code}`, { amount: $(`[data-fee="${code}"]`, body).value, basis: $(`[data-basis="${code}"]`, body).value });
+      $('#feeMsg').innerHTML = '';
+      toast(`${FEE_LABELS[code]} fee saved.`, 'ok');
+      await refreshConfig(api).catch(() => {});
     } catch (err) { $('#feeMsg').innerHTML = errorBox(err); }
   };
-}
-
-/** The Add service form: a name, what it is (so the butcher and the reports know), and its own fee. */
-async function serviceDialog() {
-  const saved = await openDialog({
-    title: 'Add service',
-    body: `<div id="sErr"></div><div class="form-grid">
-        <div class="field"><label for="sLabel">Name (the button on New order)</label><input id="sLabel" type="text" maxlength="40" placeholder="For example Deboned"></div>
-        <div class="field"><label for="sNote">Short note <span class="muted">(optional)</span></label><input id="sNote" type="text" maxlength="80" placeholder="Shown under the name"></div>
-        <div class="field"><label for="sKind">Is it a Pour or a Dress service?</label><select id="sKind"><option value="NOT_POUR">Dress (dressed chicken)</option><option value="POUR">Pour (burned chicken)</option></select>
-          <span class="hint">The butcher screen and the reports group it this way.</span></div>
-        <div class="field"><label for="sCut">Cutting</label><select id="sCut"><option value="NONE">Whole (no cutting)</option><option value="SLICE">Sliced (the cashier picks small, medium or large)</option><option value="DUKOT">Dukot (inside removed, not sliced)</option></select></div>
-        <div class="field"><label for="sFee">Fee (₱)</label><input id="sFee" type="text" inputmode="decimal" value="0"><span class="hint">0 means no fee.</span></div>
-        <div class="field"><label for="sBasis">Charged</label><select id="sBasis">${FEE_BASIS.map((b) => `<option value="${b}" ${b === 'per_head' ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select></div>
-      </div>`,
-    actions: [
-      { label: 'Cancel', value: false },
-      {
-        label: 'Add service', kind: 'primary',
-        onClick: async (dlg) => {
-          try {
-            await api('POST', '/api/services', { label: $('#sLabel', dlg).value, note: $('#sNote', dlg).value, kind: $('#sKind', dlg).value, cut: $('#sCut', dlg).value, fee: $('#sFee', dlg).value, basis: $('#sBasis', dlg).value });
-            return true;
-          } catch (err) { $('#sErr', dlg).innerHTML = errorBox(err); return false; }
-        },
-      },
-    ],
-  });
-  if (saved === true) { toast('Service added. It is on New order now.', 'ok'); await reload(); }
 }
 
 // ---- Price history (admin) -----------------------------------------------------------------------
@@ -426,7 +372,7 @@ async function historyTab(body) {
   const kind = { CHICKEN_PRICE: 'Chicken price per kg', SERVICE_FEE: 'Service fee', OTHER_PRICE: 'Other product price' };
   body.innerHTML = history.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>When</th><th>What</th><th>Item</th><th class="num">Old</th><th class="num">New</th><th>Changed by</th></tr></thead><tbody>
     ${history.map((h) => `<tr><td class="nowrap">${esc(fmtDateTime(h.changed_at))}</td><td>${esc(kind[h.kind])}</td>
-      <td>${esc(h.kind === 'SERVICE_FEE' ? (FEE_LABELS[h.subject] ?? h.subject_name ?? h.subject) : h.subject_name)}</td>
+      <td>${esc(h.kind === 'SERVICE_FEE' ? (FEE_LABELS[h.subject] ?? h.subject) : h.subject_name)}</td>
       <td class="num">${h.old_value === null ? '' : formatPeso(h.old_value)}${h.old_basis ? ` ${h.old_basis === 'per_kg' ? '/kg' : ''}` : ''}</td>
       <td class="num">${formatPeso(h.new_value)}${h.new_basis === 'per_kg' ? ' /kg' : ''}</td><td>${esc(h.changed_by_name)}</td></tr>`).join('')}</tbody></table></div>`
     : '<div class="empty">No price changes recorded yet.</div>';

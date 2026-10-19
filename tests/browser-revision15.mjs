@@ -13,8 +13,7 @@ const { loadConfig } = await import(path.join(root, 'src/config.js'));
 const { createUser } = await import(path.join(root, 'src/services/users.js'));
 const { createProduct } = await import(path.join(root, 'src/services/catalog.js'));
 const { getInventory, updateRecord } = await import(path.join(root, 'src/services/inventory.js'));
-const req = createRequire(import.meta.url);
-const { chromium } = (() => { try { return req('playwright'); } catch { return req('playwright-core'); } })();   // npm install playwright (or playwright-core)
+const { chromium } = createRequire(import.meta.url)('playwright');
 const SHOTS = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-shots-'));
 
 const db = openDb(':memory:');
@@ -28,7 +27,7 @@ const server = createApp({ db, config: loadConfig({ dbPath: ':memory:' }) }).lis
 await new Promise((r) => server.once('listening', r));
 const base = 'http://127.0.0.1:' + server.address().port;
 
-const browser = await chromium.launch(process.env.EXE ? { executablePath: process.env.EXE } : {});
+const browser = await chromium.launch();
 const out = [];
 const check = async (name, fn) => { try { await fn(); out.push('PASS ' + name); } catch (e) { out.push('FAIL ' + name + ' :: ' + String(e.message).split('\n').slice(0, 4).join(' | ')); } console.log(out.at(-1)); };
 const page = async (ctx) => { const p = await ctx.newPage(); p.setDefaultTimeout(6000); p.errs = []; p.on('pageerror', (e) => p.errs.push(e.message)); return p; };

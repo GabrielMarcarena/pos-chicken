@@ -8,7 +8,7 @@ import { $, esc, label, howItWorks, formatPeso, formatKg, formatThousandths, uui
 import { emptyPrep, applyPrepChange, validatePrep, serviceOf, needsSliceSize } from '/shared/rules.js';
 import { parseWeightToGrams, parseQuantityToMilli, parseWholeQuantityToMilli, parsePesosToCentavos, parseHeads, MAX_HEADS } from '/shared/money.js';
 import { chickenLine, otherLine, refLine } from '/shared/pricing.js';
-import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS, BUILTIN_SERVICES, REF_LABELS } from '/shared/constants.js';
+import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS, SERVICE_NOTES, SERVICE_LABELS, SERVICES, REF_LABELS } from '/shared/constants.js';
 import { cashCheck, typedMoneyText, parseMoneyInput, pesoPlain } from '/shared/cash.js';
 import { describeQty, insufficientStockMessage } from '/shared/inventory.js';
 import { orderTable, slipPayment } from './slip.js';
@@ -350,32 +350,26 @@ function keypadHtml(decimal) {
   </div>`;
 }
 
-/** The service buttons: the list the server sent (built-in ones and any the admin added), or the built-in seven before it has loaded. */
-const serviceList = () => state.config?.services ?? BUILTIN_SERVICES;
-/** The name of the service a preparation uses, for the chips (the service list has the admin's current names). */
-const serviceNameOf = (prep) => serviceList().find((d) => d.code === serviceOf(prep))?.label ?? '';
-const withName = (prep) => ({ ...prep, service_label: serviceNameOf(prep) });
-
 function feeText(code) {
   const fee = state.config.fees[code];
   return fee && fee.amount > 0 ? `+${formatPeso(fee.amount)}${fee.basis === 'per_kg' ? '/kg' : fee.basis === 'per_head' ? ' per head' : ''}` : '';
 }
 
-/** What a service adds to the price: each service has its own fee (Live has none). */
+/** What a service adds to the price: Pour and Dress (also when sliced or Dukot) carry their own fee, per head. Live, With Blood and Dukot add nothing. */
 function serviceFeeText(service) {
-  return service === 'LIVE' ? '' : feeText(service);
+  if (service === 'LIVE') return '';
+  return feeText(service.startsWith('POUR') ? 'POUR' : 'NOT_POUR');
 }
 
 function renderPrep() {
   const prep = ui.cfg.prep;
   const live = prep.feather === 'LIVE';
   const current = serviceOf(prep);
-  const slicing = needsSliceSize(current, serviceList());
-  const service = (d, i) => {
-    const v = d.code;
+  const slicing = needsSliceSize(current);
+  const service = (v, i) => {
     const fee = serviceFeeText(v);
     return `<button type="button" class="choice service ${!fee ? 'free' : ''}" role="radio" aria-checked="${current === v}" data-action="prep-service" data-v="${v}">
-      ${i < 9 ? keyBadge(`Alt+${i + 1}`) : ''}<span class="svc-text"><span class="svc-name">${esc(d.label)}</span><small>${esc(d.note)}</small></span><span class="svc-fee">${fee || 'No fee'}</span></button>`;
+      ${i < 9 ? keyBadge(`Alt+${i + 1}`) : ''}<span class="svc-text"><span class="svc-name">${esc(SERVICE_LABELS[v])}</span><small>${esc(SERVICE_NOTES[v])}</small></span><span class="svc-fee">${fee || 'No fee'}</span></button>`;
   };
   // The slice size is only asked for by the two Slice services; every other service has nothing to choose here.
   const cutChoice = (v, checked) => `<button type="button" class="choice" role="radio" aria-checked="${checked}" data-action="prep-cut" data-v="${v}" ${slicing ? '' : 'disabled'}><span>${esc(label(v))}</span></button>`;
@@ -386,7 +380,7 @@ function renderPrep() {
   $('#prep').innerHTML = `
     <fieldset class="group" role="radiogroup" aria-label="Service">
       <legend>Service<span class="req">required</span></legend>
-      <div class="service-grid">${serviceList().map(service).join('')}</div>
+      <div class="service-grid">${SERVICES.map(service).join('')}</div>
       ${live ? '<p class="live-note">Live chickens get no other preparation, so With Blood and cutting are off.</p>' : ''}
     </fieldset>
     <fieldset class="group"><legend>With Blood</legend>
@@ -432,7 +426,7 @@ function updateCfg() {
       total = calc.lineTotal;
       const each = many ? `<div class="row fee"><span>${heads} heads &middot; about ${formatKg(Math.round(grams / heads))} kg each</span><span></span></div>` : '';
       sumHtml = `${each}<div class="row"><span>${formatPeso(product.price_per_kg_centavos)}/kg &times; ${formatKg(grams)} kg</span><span>${formatPeso(calc.weightAmount)}</span></div>`
-        + calc.fees.filter((f) => f.amount > 0).map((f) => `<div class="row fee"><span>${esc(f.label ?? label(f.code))}${f.basis === 'per_head' && heads > 1 ? ` (${heads} heads)` : ''}</span><span>+${formatPeso(f.amount)}</span></div>`).join('');
+        + calc.fees.filter((f) => f.amount > 0).map((f) => `<div class="row fee"><span>${esc(label(f.code))}${f.basis === 'per_head' && heads > 1 ? ` (${heads} heads)` : ''}</span><span>+${formatPeso(f.amount)}</span></div>`).join('');
     }
     const prepErrors = validatePrep(c.prep);
     if (!hint && prepErrors.length) hint = prepErrors[0];
@@ -488,8 +482,8 @@ function renderOrderPanel() {
     if (!priced) return `<div class="line"><div class="top"><span>${esc(item.name)}</span><span class="badge badge--canceled">Unavailable</span></div>
         <div class="detail">This product is no longer active or has no price. Remove it to continue.</div>
         <div class="actions"><button type="button" class="btn btn--small btn--danger" data-action="remove-line" data-kind="chicken" data-key="${item.key}">Remove</button></div></div>`;
-    const chips = prepChips(withName(item.prep)).map((c) => `<span class="chip">${esc(c)}</span>`).join('')
-      + priced.fees.filter((f) => f.amount > 0).map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(f.label ?? label(f.code))}${f.basis === 'per_head' && priced.heads > 1 ? ` (${priced.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
+    const chips = prepChips(item.prep).map((c) => `<span class="chip">${esc(c)}</span>`).join('')
+      + priced.fees.filter((f) => f.amount > 0).map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(label(f.code))}${f.basis === 'per_head' && priced.heads > 1 ? ` (${priced.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
     return `<div class="line"><div class="top"><span>${iconFor(priced.product.name)} ${esc(priced.product.name)}</span><span>${formatPeso(priced.lineTotal)}</span></div>
         <div class="detail">${priced.heads > 1 ? `${priced.heads} heads &middot; ` : ''}${formatKg(priced.weightG)} kg &times; ${formatPeso(priced.product.price_per_kg_centavos)}/kg</div>
         <div class="chips">${chips}</div>
@@ -567,7 +561,7 @@ function customerSummary() {
   const lines = [];
   for (const i of d.items) {
     const p = priceItem(i); if (!p) continue;
-    lines.push({ name: p.product.name, detail: [`${p.heads > 1 ? `${p.heads} heads, ` : ''}${formatKg(p.weightG)} kg`, ...prepChips({ feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut, sliceSize: i.prep.sliceSize, service_label: serviceNameOf(i.prep) })].join(' · '), total: p.lineTotal });
+    lines.push({ name: p.product.name, detail: [`${p.heads > 1 ? `${p.heads} heads, ` : ''}${formatKg(p.weightG)} kg`, ...prepChips({ feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut, sliceSize: i.prep.sliceSize })].join(' · '), total: p.lineTotal });
   }
   for (const i of d.otherItems) {
     const p = priceOther(i); if (!p) continue;
@@ -605,8 +599,8 @@ function renderReview() {
   const d = state.draft;
   const rows = d.items.map((item) => {
     const p = priceItem(item);
-    const chips = prepChips(withName(item.prep)).map((c) => `<span class="chip chip--prep">${esc(c)}</span>`).join('')   // chip--prep: not printed on the receipt
-      + p.fees.filter((f) => f.amount > 0).map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(f.label ?? label(f.code))}${f.basis === 'per_head' && p.heads > 1 ? ` (${p.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
+    const chips = prepChips(item.prep).map((c) => `<span class="chip chip--prep">${esc(c)}</span>`).join('')   // chip--prep: not printed on the receipt
+      + p.fees.filter((f) => f.amount > 0).map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(label(f.code))}${f.basis === 'per_head' && p.heads > 1 ? ` (${p.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
     return `<tr><td><strong>${esc(p.product.name)}</strong><div class="chips">${chips}</div></td>
       <td>${p.heads > 1 ? `${p.heads} heads &middot; ` : ''}${formatKg(p.weightG)} kg</td><td class="num">${formatPeso(p.product.price_per_kg_centavos)}/kg</td><td class="num">${formatPeso(p.lineTotal)}</td>
       <td class="no-print nowrap"><button type="button" class="btn btn--small" data-action="edit-line" data-kind="chicken" data-key="${item.key}">Edit</button>
@@ -794,7 +788,7 @@ function buildPayload() {
     ...(needsTag() ? { tracking_number: d.trackingNumber.trim() } : {}),   // empty = the server picks the lowest free number
     expected_total_centavos: t.total,
     items: d.items.map((i) => ({
-      product_id: i.productId, weight: i.weight, heads: i.heads ?? '1', feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut, service: serviceOf(i.prep),
+      product_id: i.productId, weight: i.weight, heads: i.heads ?? '1', feather: i.prep.feather, dara: i.prep.dara, cut: i.prep.cut,
       slice_size: i.prep.sliceSize, confirm_large: i.confirmLarge === true,
     })),
     other_items: d.otherItems.map((i) => ({
@@ -1028,9 +1022,9 @@ async function onClick(e) {
       ui.cfg.productId = Number(btn.dataset.id);
       document.querySelectorAll('#work [data-action="ref-product"]').forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
       return updateCfg();
-    case 'prep-service': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { service: v }, serviceList()); break;
-    case 'prep-dara': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { dara: !ui.cfg.prep.dara }, serviceList()); break;
-    case 'prep-cut': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { cut: v }, serviceList()); break;
+    case 'prep-service': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { service: v }); break;
+    case 'prep-dara': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { dara: !ui.cfg.prep.dara }); break;
+    case 'prep-cut': ui.cfg.prep = applyPrepChange(ui.cfg.prep, { cut: v }); break;
     case 'edit-line': {
       if (kind === 'chicken') { const item = d.items.find((i) => i.key === key); return startChicken(item.productId, item); }
       if (kind === 'ref') { const item = d.refItems.find((i) => i.key === key); return startRef(item.kind, 'sell', item); }

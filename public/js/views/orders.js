@@ -274,7 +274,7 @@ async function startChange(order) {
   const draft = newDraft();
   draft.items = order.items.map((i) => ({
     key: uuid(), productId: i.product_id, name: i.product_name, weight: formatThousandths(i.weight_g), heads: String(i.heads ?? 1),
-    prep: { feather: i.feather, dara: i.dara, cut: i.cut, sliceSize: i.slice_size, ...(String(i.service ?? '').startsWith('SVC_') ? { service: i.service } : {}) }, confirmLarge: true,
+    prep: { feather: i.feather, dara: i.dara, cut: i.cut, sliceSize: i.slice_size }, confirmLarge: true,
   }));
   draft.otherItems = order.other_items.map((i) => ({
     key: uuid(), productId: i.other_product_id, optionId: i.option_id, name: i.product_name, unit: i.unit,

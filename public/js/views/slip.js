@@ -5,10 +5,10 @@ import { discountReasonLabel, PAYMENT_METHODS } from '/shared/constants.js';
 
 export function orderTable(order) {
   const chicken = order.items.map((i) => {
-    const chips = prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size, service_label: i.service_label })
+    const chips = prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size })
       .map((c) => `<span class="chip chip--prep">${esc(c)}</span>`).join('');   // chip--prep: on screen only; the printed receipt keeps just the prices and the fees
     const fees = i.fees.filter((f) => f.amount > 0)
-      .map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(f.label ?? label(f.code))}${f.basis === 'per_head' && i.heads > 1 ? ` (${i.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
+      .map((f) => `<span class="chip chip--fee">+${formatPeso(f.amount)} ${esc(label(f.code))}${f.basis === 'per_head' && i.heads > 1 ? ` (${i.heads} × ${formatPeso(f.rate)})` : ''}</span>`).join('');
     return `<tr>
       <td><strong>${esc(i.product_name)}</strong><div class="chips">${chips}${fees}</div></td>
       <td>${i.heads > 1 ? `${i.heads} heads &middot; ` : ''}${formatKg(i.weight_g)} kg</td>

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { openDb } from '../src/db.js';
 import { loadConfig } from '../src/config.js';
 import { createUser } from '../src/services/users.js';
-import { createOtherProduct, createProduct, listOtherProducts, listProducts, listServices, seedStarterCatalog, seedRevision11Products, updateFee, updateProduct } from '../src/services/catalog.js';
+import { createOtherProduct, createProduct, listOtherProducts, listProducts, getFeeConfig, seedStarterCatalog, seedRevision11Products, updateFee, updateProduct } from '../src/services/catalog.js';
 import { exportSetup, importSetup } from '../src/services/setupData.js';
 import { inventoryDir } from '../src/services/inventory.js';
 
@@ -35,7 +35,7 @@ const fresh = () => {
 const shape = (db) => ({
   chicken: listProducts(db, { includeInactive: true }).map((p) => [p.name, p.category, p.price_per_kg_centavos, p.active]),
   other: listOtherProducts(db, { includeInactive: true }).map((p) => [p.name, p.kind, p.active, p.options.map((o) => [o.unit, o.sold_by, o.price_centavos, o.active])]),
-  services: listServices(db, { includeInactive: true }).map((x) => [x.code, x.label, x.fee_centavos, x.fee_basis, x.active]),
+  fees: getFeeConfig(db),
 });
 
 test('a setup survives export, a JSON file and import into a fresh database (same products, ways of selling, prices, fees)', () => {
@@ -43,7 +43,7 @@ test('a setup survives export, a JSON file and import into a fresh database (sam
   const data = JSON.parse(JSON.stringify(exportSetup(a.db)));
   const b = fresh();
   const done = importSetup(b.db, b.admin, data);
-  assert.ok(done.chicken >= 3 && done.other >= 2 && done.services === 7, JSON.stringify(done));
+  assert.ok(done.chicken >= 3 && done.other >= 2 && done.fees === 2, JSON.stringify(done));
   assert.deepEqual(shape(b.db), shape(a.db));
   assert.equal(b.db.prepare("SELECT active FROM products WHERE name = 'Old Hen'").get().active, 0, 'an inactive product stays inactive');
   assert.equal(b.db.prepare('SELECT COUNT(*) AS n FROM price_history').get().n > 0, true, 'the prices are in the price history under the admin');
@@ -65,7 +65,7 @@ test('the file holds no users, passwords, sessions or orders', () => {
   const a = shopWithProducts();
   const text = JSON.stringify(exportSetup(a.db));
   for (const word of ['gabriel', 'password', 'hash', 'salt', 'session', 'order', 'username']) assert.ok(!text.toLowerCase().includes(word), word);
-  assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['chicken', 'other', 'services', 'version']);
+  assert.deepEqual(Object.keys(JSON.parse(text)).sort(), ['chicken', 'fees', 'other', 'version']);
 });
 
 test('a file that is not a setup is refused and nothing is changed', () => {

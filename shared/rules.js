@@ -23,7 +23,7 @@
 // The server uses validatePrep() and REJECTS conflicting input; it never "fixes" it silently.
 // The database repeats the same rules as CHECK constraints.
 
-import { FEATHER, CUT, SLICE_SIZES, SERVICES, SERVICE_LABELS, BUILTIN_SERVICES } from './constants.js';
+import { FEATHER, CUT, SLICE_SIZES, SERVICES, SERVICE_LABELS } from './constants.js';
 
 export function emptyPrep() {
   return { feather: null, dara: false, cut: 'NONE', sliceSize: null };
@@ -31,7 +31,6 @@ export function emptyPrep() {
 
 /** The service (one of SERVICES) for a saved preparation, or null while none is chosen. */
 export function serviceOf(prep) {
-  if (prep.service) return prep.service;   // Revision 19: the service the line was saved with (a built-in or one the admin added)
   if (prep.feather === 'LIVE') return 'LIVE';
   if (prep.feather !== 'POUR' && prep.feather !== 'NOT_POUR') return null;
   if (prep.cut === 'DUKOT') return `${prep.feather}_DUKOT`;
@@ -43,7 +42,7 @@ export function serviceOf(prep) {
 export const serviceLabel = (prep) => SERVICE_LABELS[serviceOf(prep)] ?? '';
 
 /** Does this service ask for a slice size? Only the two Slice services do. */
-export const needsSliceSize = (service, list) => (Array.isArray(list) ? list : BUILTIN_SERVICES).find((d) => d.code === service)?.cut === 'SLICE';
+export const needsSliceSize = (service) => service === 'POUR_SLICE' || service === 'NOT_POUR_SLICE';
 
 /**
  * Apply one change to a preparation state and return the new state.
@@ -53,24 +52,24 @@ export const needsSliceSize = (service, list) => (Array.isArray(list) ? list : B
  *   { dara }     true | false  (With Blood)
  *   { cut }      SMALL | MEDIUM | LARGE  (a slice size)
  */
-export function applyPrepChange(prep, change, list) {
-  const services = Array.isArray(list) ? list : BUILTIN_SERVICES;
+export function applyPrepChange(prep, change) {
   const next = { ...prep };
-  const def = 'service' in change ? services.find((d) => d.code === change.service) : null;
-  if (def) {
-    // Revision 19: any service in the list (the seven built-ins and the ones the admin added) maps onto feather + cut. Only a service the admin
-    // added is named in the preparation; a built-in one is worked out from feather + cut, so a preparation looks exactly as it always did.
-    if (SERVICES.includes(def.code)) delete next.service; else next.service = def.code;
-    next.feather = def.kind;
-    if (def.kind !== 'LIVE') {
-      next.cut = def.cut;
-      if (def.cut === 'SLICE') { if (!SLICE_SIZES.includes(next.sliceSize)) next.sliceSize = null; }   // keep a size that is already chosen, otherwise wait for one
-      else next.sliceSize = null;
+  if ('service' in change && SERVICES.includes(change.service)) {
+    const service = change.service;
+    if (service === 'LIVE') {
+      next.feather = 'LIVE';
+    } else {
+      next.feather = service.startsWith('POUR') ? 'POUR' : 'NOT_POUR';
+      if (service.endsWith('_DUKOT')) { next.cut = 'DUKOT'; next.sliceSize = null; }
+      else if (service.endsWith('_SLICE')) {
+        // Po-ur & Slice / Dress & Slice: keep a slice size that is already chosen, otherwise wait for one.
+        next.cut = 'SLICE';
+        if (!SLICE_SIZES.includes(next.sliceSize)) next.sliceSize = null;
+      } else { next.cut = 'NONE'; next.sliceSize = null; }   // plain Pour or Dress: whole
     }
   }
-  if ('feather' in change) { next.feather = change.feather; delete next.service; }
+  if ('feather' in change) next.feather = change.feather;
   if (next.feather === 'LIVE') {
-    delete next.service;
     // A live chicken gets nothing else, so everything is cleared.
     next.dara = false;
     next.cut = 'NONE';
@@ -78,19 +77,14 @@ export function applyPrepChange(prep, change, list) {
     return next;
   }
   if ('dara' in change) next.dara = Boolean(change.dara);
-  if ('cut' in change && SLICE_SIZES.includes(change.cut)) {
-    // Choosing a size on a service that is not a Slice service switches to its Slice twin (Pour -> Po-ur & Slice).
-    const current = services.find((d) => d.code === next.service);
-    if (!(current && current.cut === 'SLICE')) delete next.service;
-    next.cut = 'SLICE'; next.sliceSize = change.cut;
-  }
+  if ('cut' in change && SLICE_SIZES.includes(change.cut)) { next.cut = 'SLICE'; next.sliceSize = change.cut; }
   return next;
 }
 
 /** Returns a list of plain-language problems. An empty list means the combination is valid. */
 export function validatePrep(prep) {
   const errors = [];
-  if (!FEATHER.includes(prep.feather)) errors.push('Choose a service.');
+  if (!FEATHER.includes(prep.feather)) errors.push('Choose a service: Live, Pour, Dress, Po-ur & Slice, Dress & Slice, Pour & Dukot or Dress & Dukot.');
   if (typeof prep.dara !== 'boolean') errors.push('With Blood must be on or off.');
 
   if (prep.feather === 'LIVE') {

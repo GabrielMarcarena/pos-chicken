@@ -16,7 +16,6 @@ import { validatePrep, serviceOf } from '../../shared/rules.js';
 import { chickenLine, otherLine, refLine, grandTotal, discountAmount } from '../../shared/pricing.js';
 import { REASONS, PAYMENT_METHODS, DISCOUNT_REASONS, FULFILLMENT, FULFILLMENT_LABELS, COUNTS_AS_SALE, REF_KINDS, REF_LABELS } from '../../shared/constants.js';
 import { getFeeConfig, productCode } from './catalog.js';
-import { SERVICE_LABELS } from '../../shared/constants.js';
 import { ROLE_RANK } from './users.js';
 import { ensureOpenDay, assertStock, demandOf, heldBy, rejectCanceledChicken, pieceOptionOf } from './inventory.js';
 import { toBusinessDate, phtLocalToIso } from '../time.js';
@@ -73,9 +72,7 @@ export function presentOrder(o, viewer) {
       line_no: i.line_no, product_id: i.product_id, product_code: productCode(i.product_id), product_name: i.product_name,
       price_per_kg_centavos: i.price_per_kg_centavos, heads: i.heads, weight_g: i.weight_g, weight_amount_centavos: i.weight_amount_centavos,
       feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size,
-      // The service the cashier picked: saved on the line since revision 19 (a built-in or one the admin added); older lines are worked out from feather + cut.
-      service: i.service_code ?? serviceOf({ feather: i.feather_prep, cut: i.cut_method }),
-      service_label: i.service_label ?? SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '',
+      service: serviceOf({ feather: i.feather_prep, cut: i.cut_method }),   // LIVE, POUR, NOT_POUR, POUR_SLICE, NOT_POUR_SLICE, POUR_DUKOT or NOT_POUR_DUKOT: the seven services, named the way the cashier picked them
       fees: JSON.parse(i.fee_detail), service_fee_centavos: i.service_fee_centavos, line_total_centavos: i.line_total_centavos,
     })),
     other_items: o.other_items.map((i) => ({
@@ -223,7 +220,7 @@ export function listBoard(db, viewer = null) {
     WHERE o.status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')
       AND (o.fulfillment_status <> 'COMPLETE' OR (? IS NOT NULL AND o.business_day_id = ?))
     ORDER BY o.id DESC LIMIT 1000`).all(open?.id ?? null, open?.id ?? null);
-  const chicken = db.prepare('SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size, service_code, service_label FROM order_items WHERE order_id = ? ORDER BY line_no');
+  const chicken = db.prepare('SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? ORDER BY line_no');
   const other = db.prepare('SELECT product_name, unit, sold_by, quantity_milli, pieces FROM order_other_items WHERE order_id = ? ORDER BY line_no');
   const ref = db.prepare('SELECT ref_kind, product_name, heads, weight_g FROM order_ref_items WHERE order_id = ? ORDER BY line_no');
   // What the expanded card shows about payment. Account names and numbers are left out; the Details screen has them (masked for cashiers).
@@ -234,10 +231,7 @@ export function listBoard(db, viewer = null) {
     // An order sold on an earlier business day (it was on Standby when that day was closed). It leaves the board once it is Complete.
     from_earlier_day: open ? dayId !== open.id : true, day_date: dayDate ?? o.business_date,
     payments: paid.all(o.id),
-    items: chicken.all(o.id).map((i) => ({
-      kind: 'chicken', name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size,
-      service_label: i.service_label ?? SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '',
-    })),
+    items: chicken.all(o.id).map((i) => ({ kind: 'chicken', name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size })),
     other_items: other.all(o.id).map((i) => ({ kind: 'other', name: i.product_name, unit: i.unit, sold_by: i.sold_by, quantity_milli: i.quantity_milli, pieces: i.pieces ?? null })),
     ref_items: ref.all(o.id).map((i) => ({ kind: 'ref', ref_kind: i.ref_kind, name: i.product_name, heads: i.heads, weight_g: i.weight_g })),
   }));
@@ -256,15 +250,11 @@ export function listButcher(db) {
     WHERE o.fulfillment_status IN ('ONGOING','STANDBY') AND o.status IN ('COMPLETED','REFUNDED','PARTIALLY_REFUNDED')
       AND EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id AND i.feather_prep <> 'LIVE')
     ORDER BY o.id ASC LIMIT 200`).all();
-  const chicken = db.prepare("SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size, service_code, service_label FROM order_items WHERE order_id = ? AND feather_prep <> 'LIVE' ORDER BY line_no");   // Live chicken is not cut, so it is not listed
+  const chicken = db.prepare("SELECT product_name, heads, weight_g, feather_prep, dara, cut_method, slice_size FROM order_items WHERE order_id = ? AND feather_prep <> 'LIVE' ORDER BY line_no");   // Live chicken is not cut, so it is not listed
   return {
     orders: rows.map((o) => ({
       ...o,
-      items: chicken.all(o.id).map((i) => ({
-        name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size,
-        service: i.service_code ?? serviceOf({ feather: i.feather_prep, cut: i.cut_method }),
-        service_label: i.service_label ?? SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '',
-      })),
+      items: chicken.all(o.id).map((i) => ({ name: i.product_name, heads: i.heads, weight_g: i.weight_g, feather: i.feather_prep, dara: !!i.dara, cut: i.cut_method, slice_size: i.slice_size })),
     })),
   };
 }
@@ -409,21 +399,11 @@ export function buildDraft(db, payload, config) {
     const heads = it.heads === undefined ? 1 : parseHeads(it.heads);
     if (heads === null) errors.push(`${tag}: the number of heads must be a whole number from 1 to 999.`);
     if (it.dara !== undefined && typeof it.dara !== 'boolean') errors.push(`${tag}: With Blood must be on or off.`);
-    // Revision 19: the line names its service (a code). Callers that only send feather + cut get the built-in service those mean.
     const prep = { feather: it.feather ?? null, dara: it.dara === true, cut: it.cut ?? 'NONE', sliceSize: it.slice_size ?? null };
-    let serviceRow = null;
-    if (it.service !== undefined && it.service !== null && it.service !== '') {
-      serviceRow = db.prepare('SELECT * FROM services WHERE code = ?').get(String(it.service));
-      if (!serviceRow) errors.push(`${tag}: choose one of the services on the screen.`);
-      else { prep.feather = serviceRow.kind; prep.cut = serviceRow.kind === 'LIVE' ? 'NONE' : serviceRow.cut; }
-    }
     for (const message of validatePrep(prep)) errors.push(`${tag}: ${message}`);
-    if (!serviceRow && !validatePrep(prep).length) serviceRow = db.prepare('SELECT * FROM services WHERE code = ?').get(serviceOf(prep));
-    if (serviceRow && !serviceRow.active) errors.push(`${tag}: the service ${serviceRow.label} is not available any more. Choose another service.`);
-    if (serviceRow) prep.service = serviceRow.code;
     if (weightG !== null && weightG > largeG && it.confirm_large !== true) needsLargeConfirm = true;
     if (weightG === null || heads === null || !product.active) return null;
-    return { product, weightG, heads, prep, serviceRow, calc: chickenLine({ pricePerKgCentavos: product.price_per_kg_centavos, weightG, heads, prep, fees }) };
+    return { product, weightG, heads, prep, calc: chickenLine({ pricePerKgCentavos: product.price_per_kg_centavos, weightG, heads, prep, fees }) };
   });
 
   const otherLines = others.map((it, i) => {
@@ -544,11 +524,10 @@ function insertOrder(db, user, draft, { key, now, dayId, tracking = null, replac
 
   let lineNo = 0;
   const insertItem = db.prepare(`INSERT INTO order_items (order_id, line_no, product_id, product_name, price_per_kg_centavos, weight_g, heads, weight_amount_centavos,
-                                 feather_prep, dara, cut_method, slice_size, fee_detail, service_fee_centavos, line_total_centavos, service_code, service_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+                                 feather_prep, dara, cut_method, slice_size, fee_detail, service_fee_centavos, line_total_centavos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   for (const l of draft.lines) {
     insertItem.run(orderId, ++lineNo, l.product.id, l.product.name, l.product.price_per_kg_centavos, l.weightG, l.heads, l.calc.weightAmount,
-      l.prep.feather, l.prep.dara ? 1 : 0, l.prep.cut, l.prep.sliceSize, JSON.stringify(l.calc.fees), l.calc.serviceFee, l.calc.lineTotal,
-      l.serviceRow?.code ?? null, l.serviceRow?.label ?? null);
+      l.prep.feather, l.prep.dara ? 1 : 0, l.prep.cut, l.prep.sliceSize, JSON.stringify(l.calc.fees), l.calc.serviceFee, l.calc.lineTotal);
   }
   const insertOther = db.prepare(`INSERT INTO order_other_items (order_id, line_no, other_product_id, option_id, product_name, unit, sold_by, unit_price_centavos, quantity_milli, line_total_centavos, pieces)
                                   VALUES (?,?,?,?,?,?,?,?,?,?,?)`);

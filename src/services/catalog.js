@@ -313,102 +313,26 @@ export function getProductImage(db, kindParam, id) {
 
 // ---- Service fees (admin only) ----------------------------------------------------------------
 
-/**
- * The fee of every service that can be charged, by service code (Revision 19: each service has its own, e.g. POUR_SLICE). Live has none.
- * { POUR: { amount, basis, name: 'Pour' }, POUR_SLICE: {...}, ... }  name is what the receipt's fee line calls it.
- */
+/** The fees that are charged: Pour and Dress. (Old With Blood / Dukot rows may still sit in the table; they are no longer charged or shown.) */
 export function getFeeConfig(db) {
   const fees = {};
-  for (const f of db.prepare("SELECT * FROM services WHERE kind <> 'LIVE'").all()) fees[f.code] = { amount: f.fee_centavos, basis: f.fee_basis, name: f.fee_name || f.label };
+  for (const f of db.prepare('SELECT * FROM service_fees').all()) if (SERVICE_CODES.includes(f.code)) fees[f.code] = { amount: f.amount_centavos, basis: f.basis };
   return fees;
 }
 
-/**
- * Old shortcut, kept on purpose: set the fee of a whole family at once. 'POUR' sets Pour, Po-ur & Slice and Pour & Dukot; 'NOT_POUR' sets the
- * three Dress services. It is one price change in the history. The Products screen sets one service at a time (updateService).
- */
 export function updateFee(db, user, code, body, now = new Date()) {
   if (!SERVICE_CODES.includes(code)) throw new HttpError(404, 'Unknown service.', 'NOT_FOUND');
   const amount = parsePesosToCentavos(body.amount, 1_000_000);
   if (amount === null) throw new HttpError(400, 'Enter the fee in pesos, for example 15 or 15.50.', 'VALIDATION');
   if (!FEE_BASIS.includes(body.basis)) throw new HttpError(400, 'Choose per item or per kg.', 'VALIDATION');
   return tx(db, () => {
-    const old = db.prepare('SELECT fee_centavos, fee_basis FROM services WHERE code = ?').get(code);
-    db.prepare('UPDATE services SET fee_centavos = ?, fee_basis = ?, updated_at = ? WHERE builtin = 1 AND kind = ?').run(amount, body.basis, now.toISOString(), code);
+    const old = db.prepare('SELECT * FROM service_fees WHERE code = ?').get(code);
     db.prepare('UPDATE service_fees SET amount_centavos = ?, basis = ?, updated_at = ? WHERE code = ?').run(amount, body.basis, now.toISOString(), code);
-    if (old.fee_centavos !== amount || old.fee_basis !== body.basis) {
-      logPrice(db, { kind: 'SERVICE_FEE', subject: code, name: code, oldValue: old.fee_centavos, newValue: amount, oldBasis: old.fee_basis, newBasis: body.basis, userId: user.id, now });
+    if (old.amount_centavos !== amount || old.basis !== body.basis) {
+      logPrice(db, { kind: 'SERVICE_FEE', subject: code, name: code, oldValue: old.amount_centavos, newValue: amount, oldBasis: old.basis, newBasis: body.basis, userId: user.id, now });
     }
     return getFeeConfig(db);
   });
-}
-
-// ---- Services (Revision 19) ---------------------------------------------------------------------
-
-const shapeService = (s) => ({
-  code: s.code, label: s.label, note: s.note, kind: s.kind, cut: s.cut, builtin: !!s.builtin, active: !!s.active,
-  fee_centavos: s.fee_centavos, fee_basis: s.fee_basis, fee_name: s.fee_name || s.label, asks_size: s.cut === 'SLICE',
-});
-
-/** Every service in button order. The cashier gets only the active ones (includeInactive for the Products screen). */
-export function listServices(db, { includeInactive = false } = {}) {
-  return db.prepare(`SELECT * FROM services ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY sort, code`).all().map(shapeService);
-}
-
-const readFee = (body, current) => {
-  const hasAmount = body.fee !== undefined && body.fee !== null && String(body.fee).trim() !== '';
-  const amount = hasAmount ? parsePesosToCentavos(body.fee, 1_000_000) : current.fee_centavos;
-  if (amount === null) throw new HttpError(400, 'Enter the fee in pesos, for example 15 or 15.50.', 'VALIDATION');
-  const basis = body.basis === undefined ? current.fee_basis : body.basis;
-  if (!FEE_BASIS.includes(basis)) throw new HttpError(400, 'Choose how the fee is charged: per line, per head or per kg.', 'VALIDATION');
-  return { amount, basis };
-};
-
-/** Add a service the cashier can pick (admin). body: { label, note, kind: 'POUR'|'NOT_POUR', cut: 'NONE'|'SLICE'|'DUKOT', fee, basis, fee_name }. */
-export function createService(db, user, body, now = new Date()) {
-  if (!isAdmin(user)) throw new HttpError(403, 'Only the admin can add a service.', 'FORBIDDEN');
-  const label = clean(body.label, 40);
-  if (!label) throw new HttpError(400, 'Enter a name for the service.', 'VALIDATION');
-  if (!['POUR', 'NOT_POUR'].includes(body.kind)) throw new HttpError(400, 'Choose whether it is a Pour or a Dress service (the butcher needs to know).', 'VALIDATION');
-  if (!['NONE', 'SLICE', 'DUKOT'].includes(body.cut ?? 'NONE')) throw new HttpError(400, 'Choose whole, sliced or Dukot.', 'VALIDATION');
-  const fee = readFee(body, { fee_centavos: 0, fee_basis: 'per_head' });
-  return tx(db, () => duplicateGuard(() => {
-    const next = db.prepare("SELECT COALESCE(MAX(CAST(SUBSTR(code, 5) AS INTEGER)), 0) + 1 AS n FROM services WHERE code GLOB 'SVC_[0-9]*'").get();
-    const sortNo = db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 AS sort FROM services').get().sort;
-    const code = `SVC_${next.n}`;
-    const iso = now.toISOString();
-    db.prepare(`INSERT INTO services (code, label, note, kind, cut, fee_centavos, fee_basis, fee_name, active, sort, builtin, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,1,?,0,?,?)`).run(code, label, clean(body.note, 80), body.kind, body.cut ?? 'NONE', fee.amount, fee.basis, clean(body.fee_name, 40) || label, sortNo, iso, iso);
-    if (fee.amount > 0) logPrice(db, { kind: 'SERVICE_FEE', subject: code, name: label, oldValue: null, newValue: fee.amount, newBasis: fee.basis, userId: user.id, now });
-    return shapeService(db.prepare('SELECT * FROM services WHERE code = ?').get(code));
-  }, 'service'));
-}
-
-/**
- * Change a service (admin): its name, note, receipt fee name, fee, how the fee is charged, or show/hide it. What it IS (Pour or Dress kind,
- * whole / sliced / Dukot) never changes: saved orders and the butcher depend on it. Live never has a fee.
- */
-export function updateService(db, user, code, body, now = new Date()) {
-  if (!isAdmin(user)) throw new HttpError(403, 'Only the admin can change a service.', 'FORBIDDEN');
-  return tx(db, () => duplicateGuard(() => {
-    const s = db.prepare('SELECT * FROM services WHERE code = ?').get(code);
-    if (!s) throw new HttpError(404, 'Service not found.', 'NOT_FOUND');
-    if ((body.kind !== undefined && body.kind !== s.kind) || (body.cut !== undefined && body.cut !== s.cut)) {
-      throw new HttpError(400, 'What a service is (Pour or Dress, whole, sliced or Dukot) cannot be changed. Hide it and add a new one instead.', 'VALIDATION');
-    }
-    const label = body.label !== undefined ? clean(body.label, 40) : s.label;
-    if (!label) throw new HttpError(400, 'Enter a name for the service.', 'VALIDATION');
-    const fee = readFee(body, s);
-    if (s.kind === 'LIVE' && fee.amount > 0) throw new HttpError(400, 'A live chicken never has a fee.', 'VALIDATION');
-    const active = body.active !== undefined ? (body.active ? 1 : 0) : s.active;
-    const feeName = body.fee_name !== undefined ? clean(body.fee_name, 40) : s.fee_name;
-    db.prepare('UPDATE services SET label = ?, note = ?, fee_centavos = ?, fee_basis = ?, fee_name = ?, active = ?, updated_at = ? WHERE code = ?')
-      .run(label, body.note !== undefined ? clean(body.note, 80) : s.note, fee.amount, fee.basis, feeName, active, now.toISOString(), code);
-    if (fee.amount !== s.fee_centavos || fee.basis !== s.fee_basis) {
-      logPrice(db, { kind: 'SERVICE_FEE', subject: code, name: label, oldValue: s.fee_centavos, newValue: fee.amount, oldBasis: s.fee_basis, newBasis: fee.basis, userId: user.id, now });
-    }
-    return shapeService(db.prepare('SELECT * FROM services WHERE code = ?').get(code));
-  }, 'service'));
 }
 
 export function listPriceHistory(db, limit = 200) {

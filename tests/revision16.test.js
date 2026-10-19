@@ -246,7 +246,7 @@ test('upgrade to version 13: a safety copy first; every account, id and link is 
     first.close();
 
     const db = openDb(file);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
     assert.ok(fs.readdirSync(dir).some((f) => /\.before-v13-.*\.bak$/.test(f)), 'a safety copy was saved');
     assert.deepEqual(db.prepare('SELECT id, username, role FROM users ORDER BY id').all().map((u) => ({ ...u })),
       [{ id: admin.id, username: 'owner', role: 'admin' }, { id: tv.id, username: 'butcher-tv', role: 'display' }]);
@@ -257,7 +257,7 @@ test('upgrade to version 13: a safety copy first; every account, id and link is 
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'cash_on_hand'").get().n, 1);
     db.close();
     const again = openDb(file);
-    assert.equal(again.prepare('PRAGMA user_version').get().user_version, 14, 'a second start changes nothing');
+    assert.equal(again.prepare('PRAGMA user_version').get().user_version, 13, 'a second start changes nothing');
     again.close();
     void DatabaseSync;
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

@@ -64,7 +64,7 @@ export function gatherExport(db, { from, to }) {
     for (const i of o.items) {
       tx.push({
         ...common(i.line_no), type: 'Chicken', product: i.product_name, productId: productCode(i.product_id), unitPrice: pesos(i.price_per_kg_centavos),
-        qty: i.weight_g / 1000, unit: 'kg', feather: i.service_label ?? SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '', dara: i.dara ? 'Yes' : 'No', cut: i.cut_method === 'NONE' ? 'None' : LABELS[i.cut_method],
+        qty: i.weight_g / 1000, unit: 'kg', feather: SERVICE_LABELS[serviceOf({ feather: i.feather_prep, cut: i.cut_method })] ?? '', dara: i.dara ? 'Yes' : 'No', cut: i.cut_method === 'NONE' ? 'None' : LABELS[i.cut_method],
         slice: i.slice_size ? LABELS[i.slice_size] : '', fees: pesos(i.service_fee_centavos), itemTotal: pesos(i.line_total_centavos), heads: i.heads,
       });
     }

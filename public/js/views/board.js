@@ -164,7 +164,7 @@ function lineList(o) {
     ...o.items.map((i) => ({
       name: i.name,
       qty: `${i.heads > 1 ? `${i.heads} heads · ` : ''}${formatKg(i.weight_g)} kg`,
-      chips: prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size, service_label: i.service_label }),
+      chips: prepChips({ feather: i.feather, dara: i.dara, cut: i.cut, slice_size: i.slice_size }),
     })),
     ...o.other_items.map((i) => ({
       name: i.name,
