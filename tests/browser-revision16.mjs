@@ -245,6 +245,7 @@ await check('the Pitik chicken: walks, pecks and cracks the screen (cracks fade)
   const p = await newPage(await funCtx());
   await login(p, 'cash', 'cashier-pass-1'); await p.waitForSelector('.product-card');
   await p.mouse.move(20, 20);   // the pointer rests at the top left corner
+  await p.evaluate(() => { window.__posGlassChance = 1; });   // Revision 22: only a tap on the glass cracks the screen
   await p.waitForSelector('#fun-layer .hen', { state: 'attached', timeout: 8000 });
   const where = () => p.locator('#fun-layer .hen').evaluate((e) => { const r = e.getBoundingClientRect(); return Math.round(r.x) + ',' + Math.round(r.y); });
   const w1 = await where(); await new Promise((r) => setTimeout(r, 1500)); const w2 = await where();

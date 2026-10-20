@@ -1,7 +1,7 @@
 // Products screen: chicken products, other products, services and their fees (admin edits) and the price history (admin).
 import { api } from '../api.js';
 import { state, refreshConfig } from '../state.js';
-import { $, esc, formatPeso, toast, errorBox, openDialog, fmtDateTime, productPicture, watchImages } from '../util.js';
+import { $, esc, formatPeso, toast, errorBox, openDialog, fmtDateTime, productPicture, watchImages, rowMenu } from '../util.js';
 import { FEE_LABELS, SOLD_BY, FEE_BASIS, FEE_BASIS_LABELS, PRODUCT_KINDS, UNITS, CHICKEN_CATEGORIES, eggSizeOf } from '/shared/constants.js';
 
 const isAdmin = () => state.user.role === 'admin';
@@ -27,7 +27,9 @@ export async function mountCatalog(root) {
   } catch (err) { body.innerHTML = errorBox(err); }
 }
 
-const reload = async () => { await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
+/** Draw the Products screen again, but only while it is the screen being shown (a closing box must not paint over another screen). */
+const remount = () => { if (location.hash.startsWith('#/products')) mountCatalog($('#main')); };
+const reload = async () => { await refreshConfig(api).catch(() => {}); remount(); };
 
 // ---- Deactivate or Remove (Revision 21) ----------------------------------------------------------
 // Every row can be deactivated (hidden, comes back with Reactivate) or removed (off every list; the admin can restore it for 7 days).
@@ -115,9 +117,7 @@ async function chickenTab(body) {
         <td>${esc(p.category_label ?? '')}</td>
         <td class="num">${p.price_per_kg_centavos ? formatPeso(p.price_per_kg_centavos) : '<span class="muted">Not set</span>'}</td>
         <td>${p.active ? '<span class="badge">Active</span>' : '<span class="badge badge--inactive">Inactive</span>'}</td>
-        <td class="right nowrap"><button type="button" class="btn btn--small" data-edit="${p.id}">Edit</button>
-          <button type="button" class="btn btn--small" data-picture="${p.id}">Picture</button>
-          <button type="button" class="btn btn--small" data-toggle="${p.id}">${p.active ? 'Deactivate' : 'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div>`
+        <td class="right nowrap">${rowMenu([{ label: 'Edit', attr: 'data-edit', value: p.id }, { label: 'Picture', attr: 'data-picture', value: p.id }, { label: p.active ? 'Deactivate' : 'Reactivate', attr: 'data-toggle', value: p.id }])}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty mt-s">No products yet. Add the first one.</div>'}`;
   $('#addProduct').onclick = () => productDialog(null);
   body.onclick = async (e) => {
@@ -174,7 +174,6 @@ async function productDialog(p) {
 //   Other product: piece, pack, sack, kg (kg is weighed at the counter)      Eggs: piece, carton, tray
 // A unit is sold on the New order screen only once it has a price. Managers add products; only the admin sets prices.
 
-const optionLabel = (o) => (o.sold_by === 'PER_KG' ? 'per kg' : `per ${o.unit}`);
 const unitsText = (kind) => UNITS[kind].join(', ');
 /** Revision 12: the row of the Daily Report's EGGS table an egg product is reported on (from its name; "Assorted" goes on Asst.). */
 const eggRowText = (name, kind) => { const size = eggSizeOf(name) ?? (kind === 'EGGS' ? 'Asst.' : null); return size ? `Daily Report: EGGS, ${size} row` : ''; };
@@ -189,13 +188,11 @@ async function otherTab(body) {
     ${items.length ? `<div class="table-wrap mt-s"><table class="data"><thead><tr><th>Product</th><th>Type</th><th>Units and prices</th><th>Status</th><th></th></tr></thead><tbody>
       ${items.map((p) => `<tr><td><span class="ico ico--small" aria-hidden="true">${productPicture('other', p)}</span> <strong>${esc(p.name)}</strong><div class="muted">${esc(p.code)}</div></td>
         <td>${esc(p.kind_label ?? PRODUCT_KINDS[p.kind] ?? '')}${eggRowText(p.name, p.kind) ? `<div class="muted small" data-egg-row>${esc(eggRowText(p.name, p.kind))}</div>` : ''}</td>
-        <td>${p.options.length ? p.options.map((o) => `<span class="chip ${o.active ? '' : 'chip--fee'}">${esc(optionLabel(o))}: ${o.price_centavos ? formatPeso(o.price_centavos) : 'price not set'}${o.active ? '' : ' (hidden)'}</span>`).join(' ') : '<span class="muted">No units</span>'}</td>
+        <td>${unitsList(p)}</td>
         <td>${p.active ? '<span class="badge">Active</span>' : '<span class="badge badge--inactive">Inactive</span>'}</td>
-        <td class="right nowrap"><button type="button" class="btn btn--small btn--primary" data-options="${p.id}">Units &amp; prices</button>
-          <button type="button" class="btn btn--small" data-picture="${p.id}">Picture</button>
-          <button type="button" class="btn btn--small" data-rename="${p.id}">Rename</button>
-          <button type="button" class="btn btn--small" data-toggle="${p.id}">${p.active ? 'Deactivate' : 'Reactivate'}</button>
-          ${!p.active && removableKind('other', p) ? `<button type="button" class="btn btn--small btn--danger" data-remove="${p.id}">Remove</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
+        <td class="right nowrap">${rowMenu([{ label: 'Units & prices', attr: 'data-options', value: p.id }, { label: 'Picture', attr: 'data-picture', value: p.id }, { label: 'Rename', attr: 'data-rename', value: p.id },
+          { label: p.active ? 'Deactivate' : 'Reactivate', attr: 'data-toggle', value: p.id },
+          !p.active && removableKind('other', p) && { label: 'Remove', attr: 'data-remove', value: p.id, danger: true }])}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty mt-s">No other products yet. Add things like eggs, etag or garlic.</div>'}`;
   removedList(body, 'other', reload);
   $('#addOther').onclick = async () => {
@@ -279,61 +276,84 @@ async function renameDialog(p) {
   return saved;
 }
 
-/** One unit of a product. The unit itself never changes (stock and saved orders are counted in it); the price and on/off can. */
+/** Revision 22: the Units column shows only what is on sale (active and priced): the unit on the left, its price on the right. */
+function unitsList(p) {
+  const onSale = p.options.filter((o) => o.active && o.price_centavos);
+  return onSale.length
+    ? `<ul class="unit-list">${onSale.map((o) => `<li><span>${esc(o.unit)}${o.sold_by === 'PER_KG' ? ' <small class="muted">per kg</small>' : ''}</span><strong>${formatPeso(o.price_centavos)}</strong></li>`).join('')}</ul>`
+    : '<span class="muted">No units on sale</span>';
+}
+
+/** One unit of a product as a table row. The unit itself never changes (stock and saved orders are counted in it); the price and on/off can. */
 function optionRow(o, unit) {
   const u = o?.unit ?? unit;
   const perKg = (o?.sold_by ?? (u === 'kg' ? 'PER_KG' : 'FIXED')) === 'PER_KG';
-  return `<div class="price-opt" ${o ? `data-opt="${o.id}"` : `data-new="${esc(u)}"`} data-priced="${o?.price_centavos ? 1 : 0}">
-    <strong class="opt-unit">${esc(u)}</strong>
-    <span class="muted">${perKg ? SOLD_BY.PER_KG : SOLD_BY.FIXED}</span>
-    <input type="text" data-f="price" inputmode="decimal" aria-label="Price per ${esc(u)} in pesos" value="${esc(pesoInput(o?.price_centavos))}" placeholder="${isAdmin() ? 'price in pesos' : 'admin sets price'}" ${isAdmin() ? '' : 'disabled'}>
-    <label class="check"><input type="checkbox" data-f="active" ${o && o.active ? 'checked' : ''}> Active</label>
-    <button type="button" class="btn btn--small btn--primary" data-save="${o ? o.id : `new:${esc(u)}`}">${o ? 'Save' : 'Add'}</button></div>`;
+  const price = pesoInput(o?.price_centavos);
+  return `<tr class="opt-row" ${o ? `data-opt="${o.id}"` : `data-new="${esc(u)}"`} data-priced="${o?.price_centavos ? 1 : 0}" data-orig-price="${esc(price)}" data-orig-active="${o?.active ? 1 : 0}">
+    <th scope="row" class="opt-unit">${esc(u)}</th>
+    <td class="muted" data-label="Sold by">${perKg ? SOLD_BY.PER_KG : SOLD_BY.FIXED}</td>
+    <td data-label="Price (₱)"><input type="text" data-f="price" inputmode="decimal" aria-label="Price per ${esc(u)} in pesos" value="${esc(price)}" placeholder="${isAdmin() ? 'not set' : 'admin sets'}" ${isAdmin() ? '' : 'disabled'}></td>
+    <td data-label="On sale"><label class="switch"><input type="checkbox" data-f="active" aria-label="${esc(u)} on sale" ${o && o.active ? 'checked' : ''}><span class="switch-track" aria-hidden="true"></span></label>
+      <div class="opt-err" data-opt-err></div></td></tr>`;
 }
 
 async function optionsDialog(productId) {
   const { other_products: all } = await api('GET', '/api/other-products');
   let product = all.find((p) => p.id === productId);
+  const table = (rows) => `<div class="table-wrap"><table class="data opts-table"><thead><tr><th>Unit</th><th>Sold by</th><th>Price (₱)</th><th>On sale</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   const render = () => {
     const have = new Set(product.options.map((o) => o.unit));
     const missing = (product.units ?? []).filter((u) => !have.has(u));
+    const live = product.options.filter((o) => o.active && o.price_centavos);
+    const hidden = [...product.options.filter((o) => !(o.active && o.price_centavos)).map((o) => optionRow(o)), ...missing.map((u) => optionRow(null, u))];
     return `<div id="optErr"></div>
-    <p class="muted">${esc(product.kind_label ?? '')}: ${esc(unitsText(product.kind))}. A unit with a price and ticked <strong>Active</strong> is sold at the counter. <strong>Fixed price</strong> units are whole numbers; <strong>Per kg</strong> is weighed.${isAdmin() ? '' : ' Only the admin can set prices.'}</p>
-    <div class="price-opt head"><span>Unit</span><span>Sold by</span><span>Price (₱)</span><span></span><span></span></div>
-    ${product.options.map((o) => optionRow(o)).join('')}
-    ${missing.length ? `<h3>Units this product does not have yet</h3>${missing.map((u) => optionRow(null, u)).join('')}` : ''}`;
+    <p class="muted">${esc(product.kind_label ?? '')}. A unit with a price and switched <strong>On sale</strong> is sold at the counter.${isAdmin() ? '' : ' Only the admin can set prices.'}</p>
+    ${live.length ? table(live.map((o) => optionRow(o)).join('')) : '<p class="empty">Nothing is on sale yet. Open Hidden units below, give a unit a price and switch it on.</p>'}
+    ${hidden.length ? `<details class="how mt-s" data-hidden-units><summary>Hidden units (${hidden.length})</summary>${table(hidden.join(''))}</details>` : ''}`;
   };
   await openDialog({
     title: `${product.name}: units and prices`, body: render(),
-    actions: [{ label: 'Done', kind: 'primary', value: true }],
+    actions: [{ label: 'Close', value: true }, { label: 'Save all', kind: 'primary', onClick: (dlg) => saveAll(dlg) }],
     onOpen: (dlg) => {
       const bodyEl = dlg.querySelector('.dlg-body');
-      // Giving a price to a unit that had none turns it on (it can still be unticked before saving).
+      // Giving a price to a unit that had none turns it on (it can still be switched off before saving).
       bodyEl.addEventListener('input', (e) => {
         if (e.target.dataset.f !== 'price') return;
-        const row = e.target.closest('.price-opt');
+        const row = e.target.closest('.opt-row');
         if (row.dataset.priced === '0' && e.target.value.trim() !== '') row.querySelector('[data-f="active"]').checked = true;
       });
-      bodyEl.addEventListener('click', async (e) => {
-        const btn = e.target.closest('[data-save]');
-        if (!btn) return;
-        const row = btn.closest('.price-opt');
-        const field = (f) => row.querySelector(`[data-f="${f}"]`);
-        const payload = { active: field('active').checked };
-        if (isAdmin() && field('price').value.trim() !== '') payload.price = field('price').value;
-        try {
-          const isNew = btn.dataset.save.startsWith('new:');
-          const r = isNew
-            ? await api('POST', `/api/other-products/${product.id}/options`, { ...payload, unit: btn.dataset.save.slice(4) })
-            : await api('PATCH', `/api/other-product-options/${btn.dataset.save}`, payload);
-          product = r.other_product;
-          bodyEl.innerHTML = render();
-          toast('Saved.', 'ok');
-        } catch (err) { $('#optErr', dlg).innerHTML = errorBox(err); }
-      });
+      dlg.saveAllRef = bodyEl;
     },
   });
   reload();
+
+  /** Send only the rows that changed. Stops showing the dialog's "saved" state until all of them went through. */
+  async function saveAll(dlg) {
+    const bodyEl = dlg.querySelector('.dlg-body');
+    const rows = [...bodyEl.querySelectorAll('.opt-row')].filter((row) => {
+      const price = row.querySelector('[data-f="price"]').value.trim();
+      const active = row.querySelector('[data-f="active"]').checked;
+      return row.dataset.new ? (price !== '' || active) : (price !== row.dataset.origPrice || active !== (row.dataset.origActive === '1'));
+    });
+    bodyEl.querySelectorAll('[data-opt-err]').forEach((x) => { x.innerHTML = ''; });
+    $('#optErr', dlg).innerHTML = '';
+    if (!rows.length) { toast('Nothing changed.', 'info'); return false; }
+    let failed = 0;
+    for (const row of rows) {
+      const payload = { active: row.querySelector('[data-f="active"]').checked };
+      const price = row.querySelector('[data-f="price"]').value.trim();
+      if (isAdmin() && price !== '') payload.price = price;
+      try {
+        const r = row.dataset.new
+          ? await api('POST', `/api/other-products/${product.id}/options`, { ...payload, unit: row.dataset.new })
+          : await api('PATCH', `/api/other-product-options/${row.dataset.opt}`, payload);
+        product = r.other_product;
+      } catch (err) { failed += 1; row.querySelector('[data-opt-err]').innerHTML = errorBox(err); row.closest('details')?.setAttribute('open', ''); }
+    }
+    if (failed) { $('#optErr', dlg).innerHTML = errorBox({ message: `${failed} unit${failed === 1 ? '' : 's'} could not be saved. The others were saved.` }); return false; }
+    toast('Saved.', 'ok');
+    return true;
+  }
 }
 
 // ---- Product pictures (Revision 11) -----------------------------------------------------------------
@@ -425,23 +445,23 @@ async function feesTab(body) {
   // A manager or the admin can Deactivate (or Remove an added service); only the admin changes fees and names.
   const rows = services.filter((s) => s.kind !== 'LIVE').map((s) => {
     const name = `<strong>${esc(s.label)}</strong>${s.builtin ? '' : ' <span class="muted">(added)</span>'}${s.active ? '' : ' <span class="chip">hidden</span>'}`;
-    const power = `<button type="button" class="btn btn--small" data-toggle="${esc(s.code)}">${s.active ? 'Deactivate' : 'Reactivate'}</button>
-      ${!s.active && removableKind('service', s) ? `<button type="button" class="btn btn--small btn--danger" data-remove="${esc(s.code)}">Remove</button>` : ''}`;
+    const menu = (extra = []) => rowMenu([...extra, { label: s.active ? 'Deactivate' : 'Reactivate', attr: 'data-toggle', value: s.code },
+      !s.active && removableKind('service', s) && { label: 'Remove', attr: 'data-remove', value: s.code, danger: true }]);
     return admin
       ? `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td>
           <td><input type="text" inputmode="decimal" aria-label="${esc(s.label)} fee in pesos" data-fee="${esc(s.code)}" value="${esc(pesoInput(s.fee_centavos) || '0')}"></td>
           <td><select aria-label="${esc(s.label)} fee basis" data-basis="${esc(s.code)}">${FEE_BASIS.map((b) => `<option value="${b}" ${s.fee_basis === b ? 'selected' : ''}>${FEE_BASIS_LABELS[b]}</option>`).join('')}</select></td>
           <td class="right nowrap"><button type="button" class="btn btn--small btn--primary" data-save="${esc(s.code)}">Save</button>
-            <button type="button" class="btn btn--small" data-edit="${esc(s.code)}">Edit</button> ${power}</td></tr>`
-      : `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td><td>${formatPeso(s.fee_centavos)}</td><td>${FEE_BASIS_LABELS[s.fee_basis]}</td><td class="right nowrap">${power}</td></tr>`;
+            ${menu([{ label: 'Edit', attr: 'data-edit', value: s.code }])}</td></tr>`
+      : `<tr class="${s.active ? '' : 'muted'}" data-row="${esc(s.code)}"><td>${name}</td><td>${formatPeso(s.fee_centavos)}</td><td>${FEE_BASIS_LABELS[s.fee_basis]}</td><td class="right nowrap">${menu()}</td></tr>`;
   });
   body.innerHTML = `
     <div class="note-box">These are charged on top of the chicken price. <strong>Live</strong> never has a fee. Each service has its own fee, the same one the cashier sees on New order. <strong>With Blood</strong> has no fee. ${admin ? '<strong>Per line (flat)</strong> charges the fee once for each line on the order, whatever the number of heads. <strong>Per head</strong> multiplies it by the number of heads (3 heads at ₱45 = ₱135). <strong>Per kg</strong> charges by the total weight.' : 'Only the admin can change the fees. You can deactivate a service.'}</div>
     ${admin ? '<div class="mt-s"><button type="button" class="btn btn--primary" data-add="1">+ Add service</button></div>' : ''}
     <div id="feeMsg"></div>
     <div class="table-wrap mt-s"><table class="data"><thead><tr><th>Service</th><th>Fee (₱)</th><th>Charged</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
-  removedList(body, 'service', () => mountCatalog($('#main')));
-  const refresh = async () => { await refreshConfig(api).catch(() => {}); mountCatalog($('#main')); };
+  removedList(body, 'service', () => remount());
+  const refresh = async () => { await refreshConfig(api).catch(() => {}); remount(); };
   body.onclick = async (e) => {
     try {
       const toggle = e.target.closest('[data-toggle]');

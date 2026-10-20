@@ -130,12 +130,14 @@ await check('selling with Deboned: weight 3.0 kg x 100 + 3 heads x 30 = ₱390.0
 });
 
 await check('hiding Deboned removes the button; the sold order still shows its name; renaming does not change the old order', async () => {
+  await owner.click('[data-row="SVC_1"] [data-menu]');
   await owner.click('[data-edit="SVC_1"]');
   await owner.waitForSelector('#eLabel');
   await owner.fill('#eLabel', 'Deboned Plus');
   await owner.screenshot({ path: SHOTS + '/r19-5-edit.png' });
   await owner.click('dialog button:has-text("Save changes")');
   await owner.waitForFunction(() => /Deboned Plus/.test(document.querySelector('[data-row="SVC_1"]')?.innerText ?? ''));
+  await owner.click('[data-row="SVC_1"] [data-menu]');
   await owner.click('[data-toggle="SVC_1"]');   // Deactivate (Revision 21: the box with two choices; Deactivate is the default)
   await owner.waitForSelector('input[name="dChoice"][value="deactivate"]');
   await owner.click('dialog button:has-text("Continue")');

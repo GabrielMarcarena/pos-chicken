@@ -165,3 +165,74 @@ const formatThousandthsLocal = (n) => { let s = (n / 1000).toFixed(3).replace(/0
 export function howItWorks(html, title = 'How it works') {
   return `<details class="how"><summary>${title}</summary><div class="how-body">${html}</div></details>`;
 }
+
+// ---- One "Edit" button that opens a small menu (Revision 22) ------------------------------------------------------------
+/**
+ * items: [{ label, attr, value, danger }]. Each item keeps its own data-attribute, so a screen's click handler works as if the
+ * button sat on the row. Falsy items are skipped.
+ */
+export function rowMenu(items, label = 'Edit') {
+  const list = items.filter(Boolean);
+  return `<div class="row-menu"><button type="button" class="btn btn--small" data-menu aria-haspopup="menu" aria-expanded="false">${esc(label)} <span aria-hidden="true">▾</span></button>
+    <div class="row-menu-list" role="menu" hidden>${list.map((i) => `<button type="button" role="menuitem" class="${i.danger ? 'is-danger' : ''}" ${i.attr}="${esc(i.value ?? '')}">${esc(i.label)}</button>`).join('')}</div></div>`;
+}
+
+function closeMenus(except) {
+  for (const list of document.querySelectorAll('.row-menu-list:not([hidden])')) {
+    if (list === except) continue;
+    list.hidden = true;
+    list.closest('.row-menu')?.querySelector('[data-menu]')?.setAttribute('aria-expanded', 'false');
+  }
+}
+
+/** Opens and closes every row menu. Called once at start. */
+export function installRowMenus() {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-menu]');
+    if (!btn) { closeMenus(); return; }
+    const list = btn.parentElement.querySelector('.row-menu-list');
+    const open = list.hidden;
+    closeMenus(open ? list : null);
+    list.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    list.classList.remove('up');
+    if (open) {
+      if (list.getBoundingClientRect().bottom > window.innerHeight - 8) list.classList.add('up');
+      list.querySelector('button')?.focus();
+    }
+    e.stopPropagation();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    const list = document.querySelector('.row-menu-list:not([hidden])');
+    if (!list) return;
+    if (e.key === 'Escape') { const b = list.parentElement.querySelector('[data-menu]'); closeMenus(); b.focus(); e.stopPropagation(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const items = [...list.querySelectorAll('button')];
+    const i = items.indexOf(document.activeElement);
+    items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+    e.preventDefault();
+  }, true);
+  // picking an item closes the menu (the screen's own handler still runs)
+  document.addEventListener('click', (e) => { if (e.target.closest('.row-menu-list button')) setTimeout(() => closeMenus(), 0); });
+}
+
+// ---- Phones: a table row becomes a small card (Revision 22) --------------------------------------------------------------
+// Every plain "data" table gets a data-label on each cell (its column heading). The stylesheet shows the label inside the card below 640px.
+const CARD_SKIP = '.inv, .cash-table, .adv-table, .report-table, .opts-table';
+function labelTables(root) {
+  for (const t of root.querySelectorAll('table.data')) {
+    if (t.matches(CARD_SKIP) || t.dataset.labelled === String(t.rows.length)) continue;
+    const heads = [...t.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    if (!heads.length || [...t.querySelectorAll('thead th')].some((th) => th.colSpan > 1)) continue;
+    t.classList.add('data--cards');
+    for (const tr of t.tBodies[0]?.rows ?? []) [...tr.cells].forEach((td, i) => { if (heads[i] && !td.dataset.label) td.dataset.label = heads[i]; });
+    t.dataset.labelled = String(t.rows.length);
+  }
+}
+export function installTableCards() {
+  const main = document.querySelector('#main');
+  if (!main) return;
+  let queued = false;
+  new MutationObserver(() => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; labelTables(main); }); }).observe(main, { childList: true, subtree: true });
+  labelTables(main);
+}

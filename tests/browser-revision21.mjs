@@ -36,14 +36,16 @@ const newPage = async (ctx) => { const p = await ctx.newPage(); p.setDefaultTime
 const login = async (p, u, pw) => { await p.goto(base); await p.fill('#username', u); await p.fill('#password', pw); await p.click('#loginBtn'); await p.waitForSelector('#topbar:not([hidden])'); };
 const ctx = () => browser.newContext({ viewport: { width: 1280, height: 900 } });
 const rowOf = (p, text) => p.locator('tr', { hasText: text }).first();
+/** Revision 22: the row buttons live in the Edit menu, so open it first. */
+const pick = async (row, sel) => { await row.locator('[data-menu]').click(); await row.locator(sel).click(); };
 
 const mgr = await newPage(await ctx());
 await login(mgr, 'mgr', 'manager-pass-1');
 await mgr.goto(base + '/#/products');
 
 await check('chicken products: Deactivate opens a box with two choices, and Remove is greyed out with the reason', async () => {
-  await mgr.waitForSelector('[data-toggle]');
-  await rowOf(mgr, 'Broiler').locator('[data-toggle]').click();
+  await mgr.waitForSelector('[data-menu]');
+  await pick(rowOf(mgr, 'Broiler'), '[data-toggle]');
   await mgr.waitForSelector('input[name="dChoice"][value="remove"]');
   assert.equal(await mgr.locator('input[name="dChoice"][value="deactivate"]').isChecked(), true);
   assert.equal(await mgr.locator('input[name="dChoice"][value="remove"]').isDisabled(), true);
@@ -53,24 +55,24 @@ await check('chicken products: Deactivate opens a box with two choices, and Remo
 });
 
 await check('chicken: choosing Deactivate hides it, and the row offers Reactivate (no Remove)', async () => {
-  await rowOf(mgr, 'Broiler').locator('[data-toggle]').click();
+  await pick(rowOf(mgr, 'Broiler'), '[data-toggle]');
   await mgr.click('dialog button:has-text("Continue")');
-  await mgr.waitForFunction(() => /Reactivate/.test([...document.querySelectorAll('tr')].find((r) => /Broiler/.test(r.innerText))?.innerText ?? ''));
+  await mgr.waitForFunction(() => /Reactivate/.test([...document.querySelectorAll('tr')].find((r) => /Broiler/.test(r.textContent))?.textContent ?? ''));
   assert.equal(await rowOf(mgr, 'Broiler').locator('[data-remove]').count(), 0);
-  await rowOf(mgr, 'Broiler').locator('[data-toggle]').click();   // Reactivate
-  await mgr.waitForFunction(() => /Deactivate/.test([...document.querySelectorAll('tr')].find((r) => /Broiler/.test(r.innerText))?.innerText ?? ''));
+  await pick(rowOf(mgr, 'Broiler'), '[data-toggle]');   // Reactivate
+  await mgr.waitForFunction(() => /Deactivate/.test([...document.querySelectorAll('tr')].find((r) => /Broiler/.test(r.textContent))?.textContent ?? ''));
 });
 
 await check('other products: Remove works for Ducks (empty stock); eggs are locked', async () => {
   await mgr.click('[data-tab="other"]');
   await mgr.waitForSelector('tr:has-text("Ducks")');
-  await rowOf(mgr, 'Eggs (Small)').locator('[data-toggle]').click();
+  await pick(rowOf(mgr, 'Eggs (Small)'), '[data-toggle]');
   await mgr.waitForSelector('input[name="dChoice"][value="remove"]');
   assert.equal(await mgr.locator('input[name="dChoice"][value="remove"]').isDisabled(), true);
   assert.match(await mgr.locator('.choice-rows').innerText(), /Egg products are main products/);
   await mgr.click('dialog button:has-text("Cancel")');
 
-  await rowOf(mgr, 'Ducks').locator('[data-toggle]').click();
+  await pick(rowOf(mgr, 'Ducks'), '[data-toggle]');
   await mgr.waitForSelector('input[name="dChoice"][value="remove"]:not([disabled])');
   await mgr.check('input[name="dChoice"][value="remove"]');
   await mgr.screenshot({ path: SHOTS + '/r21-2-remove-box.png' });
@@ -83,17 +85,17 @@ await check('service fees: a manager sees Deactivate on every row and Remove onl
   await mgr.click('[data-tab="fees"]');
   await mgr.waitForSelector('[data-row]');
   assert.equal(await mgr.locator('[data-row] [data-toggle]').count(), 7);   // 6 built-in + Deboned
-  await rowOf(mgr, 'Po-ur & Slice').locator('[data-toggle]').click();
+  await pick(rowOf(mgr, 'Po-ur & Slice'), '[data-toggle]');
   await mgr.waitForSelector('input[name="dChoice"][value="remove"]');
   assert.equal(await mgr.locator('input[name="dChoice"][value="remove"]').isDisabled(), true);
   assert.match(await mgr.locator('.choice-rows').innerText(), /Built-in services can be deactivated, but not removed/);
   await mgr.click('dialog button:has-text("Cancel")');
-  await rowOf(mgr, 'Deboned').locator('[data-toggle]').click();
+  await pick(rowOf(mgr, 'Deboned'), '[data-toggle]');
   await mgr.waitForSelector('input[name="dChoice"][value="remove"]:not([disabled])');
   await mgr.click('dialog button:has-text("Continue")');   // Deactivate (the default)
-  await mgr.waitForFunction(() => /hidden/.test([...document.querySelectorAll('tr')].find((r) => /Deboned/.test(r.innerText))?.innerText ?? ''));
+  await mgr.waitForFunction(() => /hidden/.test([...document.querySelectorAll('tr')].find((r) => /Deboned/.test(r.textContent))?.textContent ?? ''));
   assert.ok(await rowOf(mgr, 'Deboned').locator('[data-remove]').count(), 'an inactive added service offers Remove');
-  await rowOf(mgr, 'Deboned').locator('[data-remove]').click();
+  await pick(rowOf(mgr, 'Deboned'), '[data-remove]');
   await mgr.waitForSelector('dialog button:has-text("Remove")');
   await mgr.click('dialog button:has-text("Remove")');
   await mgr.waitForFunction(() => !/Deboned/.test(document.querySelector('#tabBody').innerText));
@@ -110,10 +112,10 @@ await check('the admin sees Removed (Ducks), with the days left, and can Restore
   assert.match(await own.locator('#removedBox').innerText(), /Ducks[\s\S]*7 days to restore/);
   await own.screenshot({ path: SHOTS + '/r21-3-removed-list.png' });
   await own.click('[data-restore]');
-  await own.waitForSelector('tr:has-text("Ducks") [data-toggle]');
+  await own.waitForSelector('tr:has-text("Ducks") [data-menu]');
   assert.equal(await own.locator('#removedBox').count(), 0, 'the Removed list is empty again');
   assert.match(await rowOf(own, 'Ducks').innerText(), /Inactive/);
-  assert.match(await rowOf(own, 'Ducks').locator('[data-toggle]').innerText(), /Reactivate/);
+  assert.match(await rowOf(own, 'Ducks').locator('[data-toggle]').textContent(), /Reactivate/);
   assert.ok(await rowOf(own, 'Ducks').locator('[data-remove]').count(), 'and can be removed again');
 });
 

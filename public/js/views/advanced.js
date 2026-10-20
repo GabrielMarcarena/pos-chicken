@@ -82,9 +82,10 @@ function refHtml() {
     : '<p class="muted">Nothing has been put in the ref yet.</p>';
   return `<section class="adv-section" aria-label="Ref stock">
       <div class="product-grid ref-grid">${cards}</div>
-      <div class="note-box mt-s"><strong>Store in the ref</strong> puts Katay or Dead chicken in the ref for preservation: choose which chicken it is, the heads and
-        the kilos. It is also added to that chicken's <strong>Katay</strong> or <strong>Dead</strong> on today's Daily Inventory. <strong>Add to order</strong> sells it by the
-        kilo at the price per kg you type, with no service fee (add a discount on the review screen if you want one).</div>
+      <p class="ref-short mt-s">Store Katay or Dead chicken in the ref, or sell it by the kilo.</p>
+      ${howItWorks(`<p><strong>Store in the ref</strong> puts Katay or Dead chicken in the ref for preservation: choose which chicken it is, the heads and
+        the kilos. It is also added to that chicken's <strong>Katay</strong> or <strong>Dead</strong> on today's Daily Inventory.</p>
+        <p><strong>Add to order</strong> sells it by the kilo at the price per kg you type, with no service fee (add a discount on the review screen if you want one).</p>`, 'Read more')}
       <h3 class="mt-l">Latest ref movements</h3>
       ${moves}
     </section>`;
@@ -141,34 +142,36 @@ function cashHtml() {
     : '<p class="muted" data-cash-saved>No cash count saved for today yet.</p>';
   const hand = m.cash_on_hand;
   if (adv.onHand === null) adv.onHand = hand ? pesoPlainText(hand.amount_centavos) : '';
-  return `<section class="adv-section" aria-label="Cash breakdown">
-      <p class="muted">Count the bills and coins in the drawer.</p>
+  const steps = (n, t) => `<h3 class="cash-step"><span class="cash-n">${n}</span>${t}</h3>`;
+  return `<section class="adv-section cash-steps" aria-label="Cash breakdown">
       ${howItWorks('<p>Type how many of each bill and coin. The amounts and the total add up as you type. Saving again replaces the count (the earlier one stays in the history).</p><p><strong>Cash on hand</strong> is the starting cash you put in the drawer for change (panukli). Type it once a day. The drawer should then hold: cash on hand + cash sales today &minus; expenses.</p>')}
-      <div class="panel cash-hand mt-s">
-        <div class="field"><label for="cashOnHand">Cash on hand <span class="muted">(starting cash, ₱)</span></label>
+      <div class="panel cash-hand mt-s" data-step="1">
+        ${steps(1, 'Starting cash <span class="muted">(panukli)</span>')}
+        <div class="field"><label for="cashOnHand" class="sr-only">Cash on hand, starting cash in pesos</label>
           <div class="tracking-row"><input id="cashOnHand" type="text" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(adv.onHand)}" data-adv-onhand>
             <button type="button" class="btn btn--small btn--primary" data-adv="onhand-save">Save</button></div></div>
-        <p class="muted" data-onhand-saved>${hand ? `Last set by ${esc(hand.by)} at ${esc(fmtDateTime(hand.set_at))}: <strong>${formatPeso(hand.amount_centavos)}</strong>.` : 'Not set for today yet.'}</p>
+        <p class="muted small" data-onhand-saved>${hand ? `Last set by ${esc(hand.by)} at ${esc(fmtDateTime(hand.set_at))}: <strong>${formatPeso(hand.amount_centavos)}</strong>.` : 'Not set for today yet.'}</p>
         <div id="onHandErr" role="alert"></div>
       </div>
-      ${saved}
-      <div class="cash-grid mt-s">
-        <div class="table-wrap"><table class="data cash-table">
-          <thead><tr><th scope="col">Bills</th><th></th><th scope="col">How many</th><th scope="col" class="num">Amount</th></tr></thead>
-          <tbody>${bills.map(row).join('')}</tbody>
-          <tbody class="cash-coins"><tr><th scope="col" colspan="4" class="cash-sub">Coins</th></tr>${coins.map(row).join('')}</tbody>
-        </table></div>
-        <div class="cash-sum panel">
-          <div class="cash-line cash-line--big"><span>Overall total <small class="muted">(counted)</small></span><output id="cashTotal"></output></div>
-          <div class="cash-line"><span>Cash on hand <small class="muted">(start of day)</small></span><span>${formatPeso(m.cash_on_hand_centavos)}</span></div>
-          <div class="cash-line"><span>Cash sales today <small class="muted">(cash, after discounts and refunds)</small></span><span>${formatPeso(m.cash_sales_centavos)}</span></div>
-          <div class="cash-line"><span>Less expenses</span><span>&minus;${formatPeso(m.expenses_total_centavos)}</span></div>
-          <div class="cash-line"><span>Expected cash</span><strong id="cashExpected" data-expected="${m.expected_cash_centavos}">${formatPeso(m.expected_cash_centavos)}</strong></div>
-          <div class="cash-line cash-line--big"><span>Excess / Loss</span><output id="cashExcess"></output></div>
-          <p class="muted cash-note">GCash, Maya, bank and other payments (${formatPeso(m.non_cash_centavos)} today) are not in the drawer, so they are not expected here.</p>
-          <div id="cashErr" role="alert"></div>
-          <button type="button" class="btn btn--primary btn--big" data-adv="cash-save">Save cash count</button>
+      <div class="panel mt-s" data-step="2">
+        ${steps(2, 'Count the drawer')}
+        <div class="cash-cols">
+          <div class="table-wrap"><table class="data cash-table"><thead><tr><th scope="col" colspan="4" class="cash-sub">Bills</th></tr></thead><tbody>${bills.map(row).join('')}</tbody></table></div>
+          <div class="table-wrap"><table class="data cash-table"><thead><tr><th scope="col" colspan="4" class="cash-sub">Coins</th></tr></thead><tbody>${coins.map(row).join('')}</tbody></table></div>
         </div>
+      </div>
+      <div class="cash-sum panel mt-s" data-step="3">
+        ${steps(3, 'Result')}
+        <div class="cash-line"><span>Counted <small class="muted">(overall total)</small></span><output id="cashTotal"></output></div>
+        <div class="cash-line"><span>Cash on hand <small class="muted">(start of day)</small></span><span>${formatPeso(m.cash_on_hand_centavos)}</span></div>
+        <div class="cash-line"><span>Cash sales today <small class="muted">(after discounts and refunds)</small></span><span>${formatPeso(m.cash_sales_centavos)}</span></div>
+        <div class="cash-line"><span>Less expenses</span><span>&minus;${formatPeso(m.expenses_total_centavos)}</span></div>
+        <div class="cash-line"><span>Expected cash</span><strong id="cashExpected" data-expected="${m.expected_cash_centavos}">${formatPeso(m.expected_cash_centavos)}</strong></div>
+        <div class="cash-result"><span>Excess / Loss</span><output id="cashExcess"></output></div>
+        <div id="cashErr" role="alert"></div>
+        <button type="button" class="btn btn--primary btn--big" data-adv="cash-save">Save cash count</button>
+        <div class="cash-foot">${saved}
+          <p class="muted cash-note">GCash, Maya, bank and other payments (${formatPeso(m.non_cash_centavos)} today) are not in the drawer, so they are not expected here.</p></div>
       </div>
     </section>`;
 }

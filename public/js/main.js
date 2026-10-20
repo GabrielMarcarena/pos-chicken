@@ -1,6 +1,6 @@
 // Starts the app, draws the top bar, and shows the screen that matches the address (#/new, #/orders ...).
 import { api, setUnauthorizedHandler } from './api.js';
-import { $, esc, toast } from './util.js';
+import { $, esc, toast, installRowMenus, installTableCards } from './util.js';
 import { state, loadDraft, saveDraft, refreshConfig } from './state.js';
 import { mountLogin } from './views/login.js';
 import { mountCheckout } from './views/checkout.js';
@@ -123,6 +123,8 @@ setUnauthorizedHandler(() => {
 
 window.addEventListener('hashchange', () => { if (state.user || isCustomerScreen()) route(); });
 installShortcuts();
+installRowMenus();   // Revision 22: the single Edit menu on Products rows
+installTableCards();   // Revision 22: tables become cards on a phone
 installFun();   // Revision 16: feathers on click, and a chicken that wanders when the computer is left alone
 
 (async () => {

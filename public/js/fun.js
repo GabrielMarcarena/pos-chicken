@@ -1,7 +1,8 @@
 // Two small touches for staff computers with a mouse (Revision 16):
 //   * admin only: a tiny burst of red feathers wherever the admin clicks;
 //   * after a minute with no mouse, key or touch, one chicken (drawn after the owner's "Pitik" animation) wanders around the screen. It pecks
-//     the screen, and each peck leaves a small crack that fades in about 10 seconds. Now and then it stops, stares out at you and blinks,
+//     the screen, pecking the ground only throws up a little feed and dust. Now and then it turns to you, leans in and taps the glass, and each tap leaves a small
+//     crack that fades in about 10 seconds. Sometimes it also stops, stares out at you and blinks,
 //     and its eye follows the resting mouse pointer. It runs off as soon as the mouse moves or a key is pressed, taking its cracks with it.
 // Everything lives in a layer that ignores the mouse (pointer-events: none), so it can never block a click. Not shown on the sign-in page,
 // the Butcher screen, the Customer screen or on touch screens. When the computer is set to reduce motion: no feathers, and the chicken
@@ -203,20 +204,16 @@ function place(h, x, y, ms = 0, how = 'linear') {
 }
 const face = (h, right) => { h.right = right; h.flip.style.transform = right ? 'scaleX(1)' : 'scaleX(-1)'; };
 
-function crackAtBeak(h) {
+/** Bits of feed (and a small puff of dust) where the beak meets the ground. No crack: the ground is not glass. */
+function feedAtBeak(h) {
   const r = h.parts.bill.getBoundingClientRect();
   const x = h.right ? r.right - 3 : r.left + 3;
   const y = r.bottom - 2;
-  const c = document.createElement('div');
-  c.className = 'crack';
-  c.style.left = `${x}px`; c.style.top = `${y}px`;
-  c.style.transform = `translate(-50%,-50%) rotate(${Math.round(Math.random() * 360)}deg) scale(${(0.7 + Math.random() * 0.6).toFixed(2)})`;
-  c.innerHTML = crackSvg();
-  getLayer().append(c);
-  h.cracks.push(c);
-  setTimeout(() => { c.remove(); h.cracks = h.cracks.filter((k) => k !== c); }, 10_500);
-  while (h.cracks.length > MAX_CRACKS) h.cracks.shift().remove();
-  // a few bits of feed fly up, like the Pitik "feed" strokes
+  const dust = document.createElement('span');
+  dust.className = 'dust';
+  dust.style.left = `${x}px`; dust.style.top = `${y}px`;
+  getLayer().append(dust);
+  setTimeout(() => dust.remove(), 650);
   for (let i = 0; i < 3; i += 1) {
     const f = document.createElement('span');
     f.className = 'feed';
@@ -229,6 +226,22 @@ function crackAtBeak(h) {
   }
 }
 
+/** A tap on the glass: a small crack where the beak hits the screen. It fades in about 10 seconds. */
+function crackOnGlass(h) {
+  const r = h.parts.bill.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  const c = document.createElement('div');
+  c.className = 'crack';
+  c.style.left = `${x}px`; c.style.top = `${y}px`;
+  c.style.transform = `translate(-50%,-50%) rotate(${Math.round(Math.random() * 360)}deg) scale(${(0.7 + Math.random() * 0.6).toFixed(2)})`;
+  c.innerHTML = crackSvg();
+  getLayer().append(c);
+  h.cracks.push(c);
+  setTimeout(() => { c.remove(); h.cracks = h.cracks.filter((k) => k !== c); }, 10_500);
+  while (h.cracks.length > MAX_CRACKS) h.cracks.shift().remove();
+}
+
 /** Tip forward and peck 2 to 4 times (the Pitik peck: body 25°, neck snapping between 52.7° and 83.7°). */
 async function peck(h) {
   h.pecking = true;
@@ -237,12 +250,34 @@ async function peck(h) {
   for (let i = 0; i < times && hen === h; i += 1) {
     await tween(h, { neck: 83.7, wing: 8, combUp: -11, combUp2: -12 }, 95);
     if (hen !== h) break;
-    crackAtBeak(h);
+    feedAtBeak(h);
     await tween(h, { neck: 52.7, wing: -8, combUp: -20, combUp2: -11, tail1: -93, tail2: -93, tail3: -93 }, 110);
     await tween(h, { tail1: -75, tail2: -75, tail3: -75 }, 90);
   }
   await tween(h, { body: 0, neck: 0, tail1: 0, tail2: 0, tail3: 0, bill: 0, wing: 0, combUp: 0, combUp2: 0 }, 320);
   h.pecking = false;
+}
+
+/** Turn to you, lean in as if close to the glass, and tap it 1 to 3 times. Each tap cracks the screen at the beak. */
+async function tapGlass(h) {
+  h.el.classList.add('looking', 'close');
+  h.staring = true;
+  await tween(h, { body: -4, neck: -8, combUp: 6, combUp2: 4 }, 260);
+  await sleep(450); if (hen !== h) return;
+  const taps = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < taps && hen === h; i += 1) {
+    await tween(h, { neck: 18, body: 2 }, 90);
+    if (hen !== h) return;
+    crackOnGlass(h);
+    await tween(h, { neck: -8, body: -4 }, 130);
+    await sleep(220 + Math.random() * 260);
+  }
+  if (hen !== h) return;
+  await sleep(300);
+  h.el.classList.remove('close');
+  await tween(h, { body: 0, neck: 0, combUp: 0, combUp2: 0 }, 260);
+  h.staring = false;
+  h.el.classList.remove('looking');
 }
 
 async function blink(h) {
@@ -287,7 +322,7 @@ async function life(h) {
     const size = view();
     await walkTo(h, 10 + Math.random() * Math.max(40, size.w - 180), size.h * 0.22 + Math.random() * Math.max(40, size.h * 0.62 - 110));
     if (hen !== h) return;
-    await peck(h);
+    if (Math.random() < (window.__posGlassChance ?? 0.3)) await tapGlass(h); else await peck(h);   // a test can force it with window.__posGlassChance
     if (hen !== h) return;
     if (Math.random() < (window.__posStareChance ?? 0.4)) { await stare(h); if (hen !== h) return; }   // a test can force it with window.__posStareChance
     await sleep(300 + Math.random() * 900);

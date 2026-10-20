@@ -4,7 +4,21 @@ A cashier screen and order records for a shop that sells chicken by weight. Cash
 
 Built with plain JavaScript on Node.js and SQLite. There is nothing to install except Node.
 
-## What changed in this version (revision 21): Deactivate or Remove
+## What changed in this version (revision 22): cleaner Products, tidier Advanced, smarter chicken, phone-friendly
+
+- **Products:** every row has one **Edit ▾** button. Pressing it opens a small menu with the rest (Edit, Picture, Rename, Units & prices, Deactivate or Reactivate, Remove). Esc or a tap outside closes it. The admin's fee box and **Save** on Service fees stay on the row.
+- **Other products, Units and prices:**
+  - the list shows only the units that are **on sale** (switched on and priced), the unit on the left and the price on the right; hidden units are not shown;
+  - the **Units & prices** box is a clean table (Unit, Sold by, Price, On sale switch) with one **Save all** button, and units that are off or have no price sit under **Hidden units**.
+- **New order > Advanced:**
+  - **Ref stock** has one short line, and **Read more** opens the full explanation;
+  - **Cash breakdown** is in 3 steps: 1 Starting cash, 2 Count the drawer (Bills and Coins side by side), 3 Result (counted, expected, big **Excess** in green or **Loss** in red, and Save). On a phone the Result stays at the bottom of the screen.
+- **The chicken:** pecking the ground now throws up feed and a little dust and **does not crack the screen**. Now and then it turns to you, leans in, and **taps the glass**, and only those taps crack the screen (the cracks fade in about 10 seconds and go when the chicken runs off).
+- **Phones:** Products and Users tables turn into cards, dialogs fit the screen, tabs scroll sideways, the top bar wraps, and New order no longer runs off the screen.
+- Fixed: closing the Units & prices box after moving to another screen could paint the Products screen over it.
+- No database change (still version 15). New browser suite `tests/browser-revision22.mjs`.
+
+## What changed in the version before (revision 21): Deactivate or Remove
 
 - **Every row** in Products (Chicken products, Other products, Service fees) has a **Deactivate** button for a **manager or the admin**. It opens a box with two choices:
   - **Deactivate:** hide it from New order; **Reactivate** brings it back any time.

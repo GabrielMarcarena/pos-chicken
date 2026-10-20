@@ -1,6 +1,6 @@
 {
   "name": "chicken-pos",
-  "version": "1.21.0",
+  "version": "1.22.0",
   "private": true,
   "type": "module",
   "description": "Cashier POS and order records for a chicken retail shop (Phase 1 MVP)",
@@ -13,7 +13,7 @@
     "export-setup": "node --disable-warning=ExperimentalWarning scripts/export-setup.js",
     "clear-records": "node --disable-warning=ExperimentalWarning scripts/clear-records.js",
     "test": "node --disable-warning=ExperimentalWarning --test tests/unit.test.js tests/api.test.js tests/clear.test.js tests/inventory.test.js tests/revision10.test.js tests/revision11.test.js tests/revision12.test.js tests/revision13.test.js tests/revision15.test.js tests/revision16.test.js tests/revision17.test.js tests/revision18.test.js tests/revision19.test.js tests/revision21.test.js",
-    "test:browser": "node --disable-warning=ExperimentalWarning tests/browser-revision15.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision16.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision19.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision21.mjs"
+    "test:browser": "node --disable-warning=ExperimentalWarning tests/browser-revision15.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision16.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision19.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision21.mjs && node --disable-warning=ExperimentalWarning tests/browser-revision22.mjs"
   },
   "devDependencies": {
     "playwright": "^1.56.0"
